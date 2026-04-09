@@ -1,0 +1,10 @@
+target/
+
+# python uv 测试环境
+py_test/
+
+# 本地配置文件
+config.toml
+
+# tmp文件
+**/tmp.*

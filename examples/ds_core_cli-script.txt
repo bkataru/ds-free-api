@@ -1,0 +1,23 @@
+# ds-core CLI 测试脚本示例
+# 注释行以 # 开头
+
+# 查看账号状态
+status
+
+# 简单对话
+chat 你好，请介绍一下 Rust 语言 false false
+
+# 启用思考模式
+chat 解释所有权和借用的关系 true false
+
+# 启用搜索
+chat Rust 最新版本有什么新特性 false true
+
+# 双开
+chat Rust 异步运行时对比 true true
+
+# 并发测试：同时发起 3 个请求
+concurrent 3 你好，请简短回复 true false
+
+# 退出
+quit
