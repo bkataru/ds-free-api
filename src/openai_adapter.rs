@@ -14,6 +14,7 @@ use std::pin::Pin;
 use crate::ds_core::{CoreError, DeepSeekCore};
 
 mod request;
+mod response;
 mod types;
 
 /// 流式响应类型
@@ -36,8 +37,8 @@ impl OpenAIAdapter {
     /// 底层复用流式接口，将 SSE 流聚合为单个 JSON 对象后返回
     pub async fn chat_completions(&self, body: &[u8]) -> Result<Vec<u8>, OpenAIAdapterError> {
         let req = request::parse(body)?;
-        let _stream = self.try_chat(&req.ds_req).await?;
-        todo!("[TODO] 聚合 SSE 流并返回 ChatCompletion JSON")
+        let stream = self.try_chat(req.ds_req).await?;
+        response::aggregate(stream, req.model).await
     }
 
     /// POST /v1/chat/completions (流式)
@@ -46,27 +47,26 @@ impl OpenAIAdapter {
         body: &[u8],
     ) -> Result<StreamResponse, OpenAIAdapterError> {
         let req = request::parse(body)?;
-        let _stream = self.try_chat(&req.ds_req).await?;
-        let _ = (
-            req.stream,
+        let stream = self.try_chat(req.ds_req).await?;
+        Ok(response::stream(
+            stream,
+            req.model,
             req.include_usage,
             req.include_obfuscation,
-            req.stop,
-        );
-        todo!("[TODO] 将 SSE 流映射为 OpenAI StreamResponse")
+        ))
     }
 
     /// 内部辅助：对 `Overloaded` 进行短延迟轮询重试，降低瞬时并发峰值导致的失败率
     async fn try_chat(
         &self,
-        req: &crate::ds_core::ChatRequest,
-    ) -> Result<impl Stream<Item = Result<Bytes, CoreError>>, CoreError> {
+        req: crate::ds_core::ChatRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, CoreError>> + Send>>, CoreError> {
         const MAX_RETRIES: usize = 3;
         const RETRY_DELAY_MS: u64 = 200;
 
         for attempt in 0..MAX_RETRIES {
             match self.ds_core.v0_chat(req.clone()).await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => return Ok(Box::pin(stream)),
                 Err(CoreError::Overloaded) if attempt + 1 < MAX_RETRIES => {
                     tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
                 }

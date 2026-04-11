@@ -18,6 +18,7 @@ pub mod tools;
 /// 解析并降级后的请求上下文
 #[derive(Debug)]
 pub struct AdapterRequest {
+    pub model: String,
     pub ds_req: ChatRequest,
     pub stream: bool,
     pub include_usage: bool,
@@ -46,6 +47,7 @@ pub fn parse(body: &[u8]) -> Result<AdapterRequest, OpenAIAdapterError> {
     debug!(target: "adapter", "模型解析结果: thinking={}, search={}", model_res.thinking_enabled, model_res.search_enabled);
 
     Ok(AdapterRequest {
+        model: req.model,
         ds_req: ChatRequest {
             prompt,
             thinking_enabled: model_res.thinking_enabled,

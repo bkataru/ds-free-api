@@ -75,7 +75,10 @@ impl Completions {
     pub async fn v0_chat(
         &self,
         req: ChatRequest,
-    ) -> Result<GuardedStream<impl Stream<Item = Result<Bytes, CoreError>>>, CoreError> {
+    ) -> Result<
+        GuardedStream<Pin<Box<dyn Stream<Item = Result<Bytes, CoreError>> + Send>>>,
+        CoreError,
+    > {
         let guard = self.pool.get_account().ok_or(CoreError::Overloaded)?;
 
         let account = guard.account();
@@ -98,7 +101,7 @@ impl Completions {
             .await?
             .map_err(|e| CoreError::ProviderError(e.to_string()));
 
-        Ok(GuardedStream::new(stream, guard))
+        Ok(GuardedStream::new(Box::pin(stream), guard))
     }
 
     async fn compute_pow(&self, token: &str) -> Result<String, CoreError> {

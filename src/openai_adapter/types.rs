@@ -217,6 +217,8 @@ pub struct ToolCall {
     pub function: Option<FunctionCall>,
     #[serde(default)]
     pub custom: Option<CustomToolCall>,
+    #[serde(default)]
+    pub index: u32,
 }
 
 /// 函数调用对象
@@ -342,13 +344,26 @@ pub struct ResponseFormat {
     pub json_schema: Option<serde_json::Value>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// stream_options 参数
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct StreamOptions {
     #[serde(default)]
     pub include_usage: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub include_obfuscation: bool,
+}
+
+impl Default for StreamOptions {
+    fn default() -> Self {
+        Self {
+            include_usage: false,
+            include_obfuscation: true,
+        }
+    }
 }
 
 // ============================================================================
@@ -442,6 +457,8 @@ pub struct Delta {
     pub function_call: Option<FunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub obfuscation: Option<String>,
 }
 
 /// Token 用量

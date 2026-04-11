@@ -12,4 +12,8 @@ ds-core-cli *ARGS:
 
 # Run openai_adapter/request submodule tests
 test-adapter-request *ARGS:
-  cargo test openai_adapter::request::tests -- {{ARGS}}
+  cargo test openai_adapter::request -- {{ARGS}}
+
+# Run openai_adapter/response submodule tests
+test-adapter-response *ARGS:
+  cargo test openai_adapter::response -- {{ARGS}}

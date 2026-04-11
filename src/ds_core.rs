@@ -10,6 +10,8 @@ mod pow;
 pub use accounts::AccountStatus;
 pub use completions::ChatRequest;
 
+use std::pin::Pin;
+
 use crate::config::Config;
 use accounts::AccountPool;
 use client::{ClientError, DsClient};
@@ -81,7 +83,12 @@ impl DeepSeekCore {
     pub async fn v0_chat(
         &self,
         req: ChatRequest,
-    ) -> Result<impl futures::Stream<Item = Result<bytes::Bytes, CoreError>>, CoreError> {
+    ) -> Result<
+        crate::ds_core::completions::GuardedStream<
+            Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, CoreError>> + Send>>,
+        >,
+        CoreError,
+    > {
         self.completions.v0_chat(req).await
     }
 

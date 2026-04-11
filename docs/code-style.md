@@ -61,3 +61,8 @@ pub fn get_account(&self) -> Option<AccountGuard>
 4. 本地 use (super, self)
 
 组间空行分隔。
+
+## 测试代码规范
+
+- 测试函数内部允许使用 `println!` 输出中间结果，便于失败时观测解析内容
+- 库代码（`src/` 非 `#[cfg(test)]` 区域）仍禁止直接使用 `println!` / `eprintln!`
