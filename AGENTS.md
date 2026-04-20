@@ -164,6 +164,7 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 - **Errors**: Chinese error messages for user-facing output
 - **Logging**: `log` crate with targets (see `docs/logging-spec.md`); `env_logger` in `main.rs` and examples
 - **Visibility**: `pub(crate)` for types not part of the public API
+- **Tests**: `println!`/`eprintln!` allowed inside `#[cfg(test)]` for debugging test output; library code (`src/` non-test) must use `log` crate
 
 ## Anti-Patterns
 
@@ -213,17 +214,10 @@ just e2e-serve
 cargo check
 cargo clippy -- -D warnings
 cargo fmt --check
+cargo audit        # requires: cargo install cargo-audit
+cargo machete      # requires: cargo install cargo-machete
 
 # Build
 cargo build
 ```
 
-## Implementation Status
-
-- `ds_core::client` ✅
-- `ds_core::pow` ✅
-- `ds_core::accounts` ✅
-- `ds_core::completions` ✅
-- `openai_adapter` ✅ (request parsing, response conversion, types, models, tool parsing)
-- `server` ✅ (axum HTTP server with auth, routes, error handling, SSE streaming)
-- `main.rs` ✅ (boots the HTTP server)

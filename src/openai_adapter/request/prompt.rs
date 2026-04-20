@@ -13,13 +13,43 @@ const IM_END: &str = "<|im_end|>";
 pub fn build(req: &ChatCompletionRequest, tool_ctx: &ToolContext) -> String {
     let mut parts: Vec<String> = req.messages.iter().map(format_message).collect();
 
-    let extra_blocks: Vec<&str> = [
-        tool_ctx.defs_text.as_deref(),
-        tool_ctx.instruction_text.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let mut extra_blocks: Vec<String> = Vec::new();
+    if let Some(text) = tool_ctx.defs_text.as_deref() {
+        extra_blocks.push(text.to_string());
+    }
+    if let Some(text) = tool_ctx.instruction_text.as_deref() {
+        extra_blocks.push(text.to_string());
+    }
+
+    // response_format 降级：将格式约束注入到 reminder 块中
+    if let Some(rf) = &req.response_format {
+        match rf.ty.as_str() {
+            "json_object" => {
+                extra_blocks.push("请直接输出合法的 JSON 对象，不要包含任何 markdown 代码块标记或其他解释性文字。".to_string());
+            }
+            "json_schema" => {
+                let schema_text = rf
+                    .json_schema
+                    .as_ref()
+                    .map(|s| serde_json::to_string(s).unwrap_or_default())
+                    .unwrap_or_default();
+                if schema_text.is_empty() {
+                    extra_blocks.push(
+                        "请严格遵循 JSON Schema 输出，不要添加 markdown 代码块。".to_string(),
+                    );
+                } else {
+                    extra_blocks.push(format!(
+                        "请严格遵循以下 JSON Schema 输出，不要包含 schema 之外的内容，不要添加 markdown 代码块。\nSchema: {}",
+                        schema_text
+                    ));
+                }
+            }
+            "text" => {} // 默认值，无需注入
+            _ => {
+                extra_blocks.push(format!("请以 {} 格式输出。", rf.ty));
+            }
+        }
+    }
 
     if !extra_blocks.is_empty() {
         let extra = extra_blocks.join("\n\n");

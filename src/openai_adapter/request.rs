@@ -8,7 +8,9 @@ use log::debug;
 
 use crate::ds_core::ChatRequest;
 use crate::openai_adapter::OpenAIAdapterError;
-use crate::openai_adapter::types::ChatCompletionRequest;
+use crate::openai_adapter::types::{
+    ChatCompletionRequest, FunctionCallOption, NamedFunction, NamedToolChoice, Tool, ToolChoice,
+};
 
 mod normalize;
 mod prompt;
@@ -34,10 +36,38 @@ pub fn parse(
     body: &[u8],
     registry: &std::collections::HashMap<String, String>,
 ) -> Result<AdapterRequest, OpenAIAdapterError> {
-    let req: ChatCompletionRequest = serde_json::from_slice(body)
+    let mut req: ChatCompletionRequest = serde_json::from_slice(body)
         .map_err(|e| OpenAIAdapterError::BadRequest(format!("bad request: {}", e)))?;
 
     debug!(target: "adapter", "解析 OpenAI 请求: model={}", req.model);
+
+    // 兼容旧版 functions / function_call → tools / tool_choice
+    if req.tools.as_ref().map(|t| t.is_empty()).unwrap_or(true)
+        && let Some(functions) = req.functions.clone()
+        && !functions.is_empty()
+    {
+        req.tools = Some(
+            functions
+                .into_iter()
+                .map(|f| Tool {
+                    ty: "function".to_string(),
+                    function: Some(f),
+                    custom: None,
+                })
+                .collect(),
+        );
+    }
+    if req.tool_choice.is_none()
+        && let Some(fc) = req.function_call.clone()
+    {
+        req.tool_choice = Some(match fc {
+            FunctionCallOption::Mode(mode) => ToolChoice::Mode(mode),
+            FunctionCallOption::Named(named) => ToolChoice::Named(NamedToolChoice {
+                ty: "function".to_string(),
+                function: NamedFunction { name: named.name },
+            }),
+        });
+    }
 
     let norm = normalize::apply(&req).map_err(OpenAIAdapterError::BadRequest)?;
 
@@ -631,5 +661,116 @@ mod tests {
         let reminder_pos = prompt.find("<|im_start|>reminder").unwrap();
         let assistant_pos = prompt.rfind("<|im_start|>assistant").unwrap();
         assert!(reminder_pos < assistant_pos);
+    }
+
+    // functions / function_call 兼容降级
+
+    #[test]
+    fn functions_legacy_to_tools() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "北京天气？" }],
+            "functions": [
+                {
+                    "name": "get_weather",
+                    "description": "获取天气",
+                    "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+                }
+            ],
+            "function_call": "auto"
+        });
+        let req = parse_json(body).unwrap();
+        assert!(req.ds_req.prompt.contains("get_weather"));
+        assert!(req.ds_req.prompt.contains("你可以使用以下工具"));
+    }
+
+    #[test]
+    fn function_call_named_legacy() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "查天气" }],
+            "functions": [
+                { "name": "get_weather", "parameters": {} }
+            ],
+            "function_call": { "name": "get_weather" }
+        });
+        let req = parse_json(body).unwrap();
+        assert!(req.ds_req.prompt.contains("你必须调用 'get_weather' 工具"));
+    }
+
+    #[test]
+    fn tools_priority_over_functions() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [
+                { "type": "function", "function": { "name": "tool_a", "parameters": {} } }
+            ],
+            "functions": [
+                { "name": "func_b", "parameters": {} }
+            ],
+            "tool_choice": "auto",
+            "function_call": { "name": "func_b" }
+        });
+        let req = parse_json(body).unwrap();
+        assert!(req.ds_req.prompt.contains("tool_a"));
+        assert!(!req.ds_req.prompt.contains("func_b"));
+    }
+
+    #[test]
+    fn function_call_none_ignores_functions() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "functions": [
+                { "name": "get_weather", "parameters": {} }
+            ],
+            "function_call": "none"
+        });
+        let req = parse_json(body).unwrap();
+        assert!(!req.ds_req.prompt.contains("你可以使用以下工具"));
+    }
+
+    // response_format 兼容降级
+
+    #[test]
+    fn response_format_json_object() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "输出 JSON" }],
+            "response_format": { "type": "json_object" }
+        });
+        let req = parse_json(body).unwrap();
+        assert!(req.ds_req.prompt.contains("请直接输出合法的 JSON 对象"));
+    }
+
+    #[test]
+    fn response_format_json_schema() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "结构化输出" }],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "person",
+                    "schema": { "type": "object", "properties": { "name": { "type": "string" } } }
+                }
+            }
+        });
+        let req = parse_json(body).unwrap();
+        assert!(req.ds_req.prompt.contains("JSON Schema"));
+        assert!(req.ds_req.prompt.contains("person"));
+    }
+
+    #[test]
+    fn response_format_text_no_injection() {
+        let body = serde_json::json!({
+            "model": "deepseek-default",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "response_format": { "type": "text" }
+        });
+        let req = parse_json(body).unwrap();
+        assert!(!req.ds_req.prompt.contains("请以"));
+        assert!(!req.ds_req.prompt.contains("JSON"));
     }
 }

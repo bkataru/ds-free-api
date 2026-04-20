@@ -6,7 +6,7 @@ MODEL = "deepseek-default"
 
 
 def test_tool_call(client):
-    """验证带 tools 的请求能成功返回，且如果触发 tool_calls 则格式正确。"""
+    """验证带 tools 的非流式请求能成功返回，且如果触发 tool_calls 则格式正确。"""
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[
@@ -96,3 +96,58 @@ def test_tool_call_stream(client):
             for c in chunks if c.choices
         )
         assert content
+
+
+def test_tool_call_with_leading_text(client):
+    """验证模型输出前导文本后接 tool_calls 的场景。"""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "user", "content": "帮我查一下北京的天气，用 get_weather 工具。"}
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        tool_choice="required",
+        stream=False,
+    )
+
+    assert resp.choices[0].finish_reason == "tool_calls"
+    assert resp.choices[0].message.tool_calls
+    assert resp.choices[0].message.tool_calls[0].function.name == "get_weather"
+
+
+def test_custom_tool_grammar(client):
+    """验证自定义工具（grammar 格式）的请求能正常解析不报错。"""
+    resp = client.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": "生成一个符合语法规则的字符串"}],
+        tools=[
+            {
+                "type": "custom",
+                "custom": {
+                    "name": "grammar_tool",
+                    "description": "基于语法的工具",
+                    "format": {
+                        "type": "grammar",
+                        "grammar": {
+                            "definition": "start: word+",
+                            "syntax": "lark",
+                        },
+                    },
+                },
+            }
+        ],
+        stream=False,
+    )
+    # 自定义工具目前只是 prompt 注入，响应应为正常 content 或 tool_calls
+    assert resp.choices[0].message.content or resp.choices[0].message.tool_calls
