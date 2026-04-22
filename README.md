@@ -19,7 +19,7 @@
 
 [English](README.en.md)
 
-将免费的 DeepSeek 网页端对话反代并适配转换为标准的 OpenAI API 协议 (目前支持 openai_chat_completions，包括流式返回与工具调用)。
+将免费的 DeepSeek 网页端对话反代并适配转换为标准的 OpenAI 与 Anthropic 兼容 API 协议（目前支持 chat completions 和 messages，包括流式返回与工具调用）。
 
 支持 Rust 原生多端高性能，单可执行文件 + 单 TOML 配置文件。
 
