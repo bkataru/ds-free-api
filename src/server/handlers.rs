@@ -131,6 +131,7 @@ pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<Response, ServerError> {
+    log::debug!(target: "http::request", "Anthropic request body: {}", String::from_utf8_lossy(&body));
     // 先解析出 stream 字段决定走流式还是非流式
     let stream = serde_json::from_slice::<crate::anthropic_compat::request::MessagesRequest>(&body)
         .map(|req| req.stream)

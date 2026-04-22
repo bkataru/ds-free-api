@@ -34,7 +34,8 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = TcpListener::bind(&addr).await?;
-    log::info!(target: "http::server", "服务器启动: {}", addr);
+    log::info!(target: "http::server", "openai兼容base_url: http://{}", addr);
+    log::info!(target: "http::server", "anthropic兼容base_url: http://{}/anthropic", addr);
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())

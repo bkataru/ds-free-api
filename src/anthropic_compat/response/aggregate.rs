@@ -39,7 +39,7 @@ fn map_completion(openai: &OpenAiCompletion) -> Message {
             for call in calls {
                 let input = parse_tool_call_input(call);
                 content.push(ContentBlock::ToolUse {
-                    id: call.id.clone(),
+                    id: map_id(&call.id),
                     name: tool_call_name(call),
                     input,
                 });
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(msg["stop_reason"], "tool_use");
         assert_eq!(msg["content"].as_array().unwrap().len(), 1);
         assert_eq!(msg["content"][0]["type"], "tool_use");
-        assert_eq!(msg["content"][0]["id"], "call_abc");
+        assert_eq!(msg["content"][0]["id"], "toolu_abc");
         assert_eq!(msg["content"][0]["name"], "get_weather");
         assert_eq!(msg["content"][0]["input"]["city"], "Beijing");
     }

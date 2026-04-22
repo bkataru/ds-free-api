@@ -35,9 +35,11 @@ struct ContentBlockStartEvent {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 enum ContentBlockDelta {
     TextDelta { text: String },
     ThinkingDelta { thinking: String },
+    InputJsonDelta { partial_json: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -292,29 +294,27 @@ impl StreamState {
         {
             events.extend(self.transition_to(BlockKind::ToolUse));
             for call in calls {
-                let input = if let Some(ref func) = call.function {
-                    serde_json::from_str(&func.arguments).unwrap_or_else(|_| serde_json::json!({}))
+                let (name, partial_json) = if let Some(ref func) = call.function {
+                    (func.name.clone(), func.arguments.clone())
                 } else if let Some(ref custom) = call.custom {
-                    custom
-                        .input
-                        .clone()
-                        .unwrap_or_else(|| serde_json::json!({}))
+                    let json =
+                        serde_json::to_string(&custom.input).unwrap_or_else(|_| "{}".to_string());
+                    (custom.name.clone(), json)
                 } else {
-                    serde_json::json!({})
+                    (String::new(), "{}".to_string())
                 };
-                let name = call
-                    .function
-                    .as_ref()
-                    .map(|f| f.name.clone())
-                    .or_else(|| call.custom.as_ref().map(|c| c.name.clone()))
-                    .unwrap_or_default();
+                trace!(target: "anthropic_compat::response::stream", "tool_use block: id={}, name={}, partial_json={}", call.id, name, partial_json);
                 events.push(StreamEvent::ContentBlockStart {
                     index: self.block_index,
                     content_block: ContentBlock::ToolUse {
-                        id: call.id.clone(),
-                        name,
-                        input,
+                        id: map_id(&call.id),
+                        name: name.clone(),
+                        input: serde_json::json!({}),
                     },
+                });
+                events.push(StreamEvent::ContentBlockDelta {
+                    index: self.block_index,
+                    delta: ContentBlockDelta::InputJsonDelta { partial_json },
                 });
                 events.push(StreamEvent::ContentBlockStop {
                     index: self.block_index,
@@ -396,6 +396,11 @@ impl StreamEvent {
                         ContentBlockDelta::ThinkingDelta { thinking } => {
                             ContentBlockDelta::ThinkingDelta {
                                 thinking: thinking.clone(),
+                            }
+                        }
+                        ContentBlockDelta::InputJsonDelta { partial_json } => {
+                            ContentBlockDelta::InputJsonDelta {
+                                partial_json: partial_json.clone(),
                             }
                         }
                     },
@@ -702,19 +707,26 @@ mod tests {
 
         assert_eq!(events[0].0, "message_start");
 
-        // tool_use block (start + stop, no delta)
+        // tool_use block: start (empty input) + input_json_delta + stop
         assert_eq!(events[1].0, "content_block_start");
         assert_eq!(events[1].1["content_block"]["type"], "tool_use");
-        assert_eq!(events[1].1["content_block"]["id"], "call_abc");
+        assert_eq!(events[1].1["content_block"]["id"], "toolu_abc");
         assert_eq!(events[1].1["content_block"]["name"], "get_weather");
-        assert_eq!(events[1].1["content_block"]["input"]["city"], "Beijing");
+        assert_eq!(events[1].1["content_block"]["input"], serde_json::json!({}));
 
-        assert_eq!(events[2].0, "content_block_stop");
+        assert_eq!(events[2].0, "content_block_delta");
+        assert_eq!(events[2].1["delta"]["type"], "input_json_delta");
+        assert_eq!(
+            events[2].1["delta"]["partial_json"],
+            r#"{"city":"Beijing"}"#
+        );
 
-        assert_eq!(events[3].0, "message_delta");
-        assert_eq!(events[3].1["delta"]["stop_reason"], "tool_use");
+        assert_eq!(events[3].0, "content_block_stop");
 
-        assert_eq!(events[4].0, "message_stop");
+        assert_eq!(events[4].0, "message_delta");
+        assert_eq!(events[4].1["delta"]["stop_reason"], "tool_use");
+
+        assert_eq!(events[5].0, "message_stop");
     }
 
     #[tokio::test]

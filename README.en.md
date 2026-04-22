@@ -6,7 +6,7 @@
 
 [中文](README.md)
 
-Reverse proxy and adapter for free DeepSeek web chat endpoints to standard OpenAI-compatible API protocol (currently supports openai_chat_completions, including streaming and tool calls).
+Reverse proxy and adapter for free DeepSeek web chat endpoints to standard OpenAI-compatible and Anthropic-compatible API protocols (currently supports chat completions and messages, including streaming and tool calls).
 
 Cross-platform native Rust binary + single TOML config file.
 
@@ -79,6 +79,9 @@ Recommended temp-mail site: [temp-mail.org](https://temp-mail.org/en/10minutemai
 | POST | `/v1/chat/completions` | Chat completions (streaming and tool calls supported) |
 | GET | `/v1/models` | List models |
 | GET | `/v1/models/{id}` | Get model |
+| POST | `/anthropic/v1/messages` | Anthropic Messages API (streaming and tool calls supported) |
+| GET | `/anthropic/v1/models` | List models (Anthropic format) |
+| GET | `/anthropic/v1/models/{id}` | Get model (Anthropic format) |
 
 ## Model Mapping
 
@@ -89,6 +92,8 @@ Recommended temp-mail site: [temp-mail.org](https://temp-mail.org/en/10minutemai
 | `deepseek-default` | Default mode |
 | `deepseek-expert` | Expert mode |
 
+The Anthropic compatibility layer uses the same model IDs, accessed via `/anthropic/v1/messages`.
+
 ### Capability Toggles
 
 - **Reasoning**: Enabled by default. To disable, add `"reasoning_effort": "none"` to the request body.
@@ -97,7 +102,7 @@ Recommended temp-mail site: [temp-mail.org](https://temp-mail.org/en/10minutemai
 
 ## Development
 
-Requires Rust 1.94.1+ (see `rust-toolchain.toml`).
+Requires Rust 1.95.0+ (see `rust-toolchain.toml`).
 
 ```bash
 # One-pass check (check + clippy + fmt + audit + unused deps)
@@ -123,34 +128,74 @@ just e2e-serve
 Architecture overview:
 
 ```mermaid
-graph LR
-    Client -- "OpenAI protocol" --> Server
+flowchart TB
+    %% ========== Style definitions ==========
+    classDef client fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#1e40af,rx:12,ry:12
+    classDef gateway fill:#fef9c3,stroke:#ca8a04,stroke-width:3px,color:#854d0e,rx:10,ry:10
+    classDef adapter fill:#fae8ff,stroke:#a21caf,stroke-width:2px,color:#701a75,rx:8,ry:8
+    classDef core fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#14532d,rx:8,ry:8
+    classDef external fill:#fee2e2,stroke:#dc2626,stroke-width:3px,color:#991b1b,rx:4,ry:4
 
-    subgraph server["server (axum HTTP)"]
-        Server[Routing / Auth]
+    %% ========== Node definitions ==========
+    Client(["Client<br/>OpenAI / Anthropic protocol"]):::client
+
+    subgraph GW ["Gateway (axum HTTP)"]
+        Server(["Routing / Auth"]):::gateway
     end
 
-    subgraph openai_adapter["openai_adapter"]
-        Request[Request parsing]
-        Response[Response conversion]
+    subgraph PL ["Protocol Layer"]
+        direction LR
+
+        subgraph AC ["Anthropic compat (anthropic_compat)"]
+            A2OReq["Anthropic → OpenAI<br/>request mapping"]:::adapter
+            O2AResp["OpenAI → Anthropic<br/>response mapping"]:::adapter
+        end
+
+        subgraph OA ["OpenAI adapter (openai_adapter)"]
+            ReqParse["Request parsing"]:::adapter
+            RespTrans["Response conversion"]:::adapter
+        end
     end
 
-    subgraph ds_core["ds_core"]
-        Pool[Account pool rotation]
-        Pow[PoW solving]
-        Chat[Chat orchestration]
+    subgraph CL ["Core logic (ds_core)"]
+        direction TB
+        Pool["Account pool rotation"]:::core
+        Pow["PoW solving"]:::core
+        Chat["Chat orchestration"]:::core
     end
 
-    Server --> Request --> Pool
-    Pool --> Pow --> Chat
-    Chat -- "DeepSeek internal protocol" --> DeepSeek[(DeepSeek API)]
-    Chat -- "SSE stream" --> Response --> Server
+    DeepSeek[("DeepSeek API")]:::external
+
+    %% ========== Request flow ==========
+    Client -->|"OpenAI / Anthropic protocol"| Server
+    Server -->|"OpenAI traffic"| ReqParse
+    Server -->|"Anthropic traffic"| A2OReq
+    A2OReq --> ReqParse
+    ReqParse --> Pool
+    Pool --> Pow
+    Pow --> Chat
+    Chat -->|"DeepSeek internal protocol"| DeepSeek
+
+    %% ========== Response flow ==========
+    Chat -.->|"SSE stream"| RespTrans
+    RespTrans -.->|"OpenAI response"| Server
+    RespTrans -.->|"pending conversion"| O2AResp
+    O2AResp -.->|"Anthropic response"| Server
+
+    %% ========== Subgraph styling ==========
+    style GW fill:#fefce8,stroke:#eab308,stroke-width:2px
+    style PL fill:#fafafa,stroke:#a3a3a3,stroke-width:2px
+    style AC fill:#fdf4ff,stroke:#c026d3,stroke-width:1px
+    style OA fill:#f5f3ff,stroke:#8b5cf6,stroke-width:1px
+    style CL fill:#f0fdf4,stroke:#22c55e,stroke-width:2px
 ```
 
 Data pipelines:
 
-- **Request**: `JSON body` → `normalize` validation/defaults → `tools` extraction → `prompt` ChatML build → `resolver` model mapping → `ChatRequest`
-- **Response**: `DeepSeek SSE bytes` → `sse_parser` → `state` patch state machine → `converter` format conversion → `tool_parser` XML parsing → `StopStream` truncation → `OpenAI SSE bytes`
+- **OpenAI request**: `JSON body` → `normalize` validation/defaults → `tools` extraction → `prompt` ChatML build → `resolver` model mapping → `ChatRequest`
+- **OpenAI response**: `DeepSeek SSE bytes` → `sse_parser` → `state` patch state machine → `converter` format conversion → `tool_parser` XML parsing → `StopStream` truncation → `OpenAI SSE bytes`
+- **Anthropic request**: `Anthropic JSON` → `to_openai_request()` → enters OpenAI request pipeline
+- **Anthropic response**: OpenAI output → `from_chat_completion_stream()` / `from_chat_completion_bytes()` → `Anthropic SSE/JSON`
 
 ## License
 

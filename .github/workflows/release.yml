@@ -37,7 +37,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -85,7 +85,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -133,7 +133,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -178,7 +178,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94.1"
+          toolchain: "1.95.0"
           targets: ${{ matrix.target }}
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2

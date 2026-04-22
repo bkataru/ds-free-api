@@ -143,21 +143,51 @@ pub struct SystemTextBlock {
 }
 
 /// 工具联合类型
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "type")]
+#[derive(Debug, Clone)]
 pub enum ToolUnion {
-    #[serde(rename = "custom")]
     Custom {
         name: String,
-        #[serde(default)]
         description: Option<String>,
         input_schema: serde_json::Value,
-        #[serde(default)]
         strict: Option<bool>,
     },
     // 服务器工具（bash / code_execution / web_search 等）忽略
-    #[serde(other)]
     Other,
+}
+
+impl<'de> serde::Deserialize<'de> for ToolUnion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("tool must be an object"))?;
+
+        match obj.get("type").and_then(|v| v.as_str()) {
+            Some("custom") | None => {
+                let name = obj
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| serde::de::Error::missing_field("name"))?;
+                let description = obj
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let input_schema = obj.get("input_schema").cloned().unwrap_or_default();
+                let strict = obj.get("strict").and_then(|v| v.as_bool());
+                Ok(ToolUnion::Custom {
+                    name,
+                    description,
+                    input_schema,
+                    strict,
+                })
+            }
+            Some(_) => Ok(ToolUnion::Other),
+        }
+    }
 }
 
 /// tool_choice 参数

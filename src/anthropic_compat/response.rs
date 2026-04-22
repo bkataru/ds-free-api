@@ -128,6 +128,8 @@ pub(crate) fn finish_reason_map(reason: &str) -> String {
 pub(crate) fn map_id(openai_id: &str) -> String {
     if let Some(hex) = openai_id.strip_prefix("chatcmpl-") {
         format!("msg_{}", hex)
+    } else if let Some(suffix) = openai_id.strip_prefix("call_") {
+        format!("toolu_{}", suffix)
     } else {
         format!("msg_{}", openai_id)
     }

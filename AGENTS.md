@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Rust API proxy exposing free DeepSeek model endpoints. Translates standard OpenAI-compatible and Anthropic-compatible requests to DeepSeek's internal protocol with account pool rotation, PoW challenge handling, and streaming response support.
 
-Requires Rust **1.94.1** (pinned in `rust-toolchain.toml`) with **edition 2024**.
+Requires Rust **1.95.0** (pinned in `rust-toolchain.toml`) with **edition 2024**.
 
 ## Principles
 
@@ -65,7 +65,10 @@ src/
 ├── anthropic_compat/
 │   ├── models.rs                # Anthropic model list/get (translates from OpenAI format)
 │   ├── request.rs               # Anthropic → OpenAI request mapping
-│   └── response.rs              # OpenAI → Anthropic response mapping (stream + aggregate)
+│   ├── response.rs              # Response mapping facade; declares aggregate/ stream
+│   └── response/
+│       ├── aggregate.rs         # Non-streaming OpenAI → Anthropic response conversion
+│       └── stream.rs            # Streaming OpenAI SSE → Anthropic SSE conversion
 ├── server.rs                    # HTTP server facade: axum router, auth middleware, shutdown; declares handlers/ stream/ error
 └── server/
     ├── handlers.rs              # Route handlers: OpenAI + Anthropic endpoints
@@ -125,7 +128,7 @@ JSON body → serde deserialize → normalize (validation/defaults) → tools ex
 ds_core SSE bytes → SseStream (sse_parser) → StateStream (state/patch machine) → ConverterStream (converter) → ToolCallStream (tool_parser) → StopStream (stop sequences) → SSE bytes
 ```
 
-All stream wrappers use `pin_project!` macro and implement the `Stream` trait with `poll_next`.
+All stream wrappers use `pin_project_lite::pin_project!` macro and implement the `Stream` trait with `poll_next`.
 
 ### Anthropic Compatibility Layer
 The Anthropic compat layer (`anthropic_compat/`) is a **pure protocol translator** that sits on top of `openai_adapter`:
@@ -133,6 +136,15 @@ The Anthropic compat layer (`anthropic_compat/`) is a **pure protocol translator
 - Request flow: `Anthropic JSON → to_openai_request() → OpenAIAdapter::chat_completions() / try_chat()`
 - Response flow: `OpenAI SSE/JSON → from_chat_completion_stream() / from_chat_completion_bytes() → Anthropic SSE/JSON`
 - Supports both streaming and non-streaming `/v1/messages`
+
+**Streaming tool calls** use the `input_json_delta` event sequence:
+1. `content_block_start` with empty `input: {}`
+2. One or more `content_block_delta` with `input_json_delta` containing partial JSON
+3. `content_block_stop`
+
+**Tool use ID mapping** via `map_id()`: OpenAI `chatcmpl-{hex}` → Anthropic `msg_{hex}`; OpenAI `call_{suffix}` → Anthropic `toolu_{suffix}`.
+
+**Tool `type` compatibility**: Claude Code may omit the `type` field in tool definitions. `ToolUnion` in `request.rs` implements a custom `Deserialize` that defaults to `Custom` when `type` is absent.
 
 ### Error Translation Chain
 Errors propagate upward with translation at module boundaries:
@@ -186,6 +198,8 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 | OpenAI request parsing | `src/openai_adapter/request/` | normalize → tools → prompt → resolver |
 | OpenAI response conversion | `src/openai_adapter/response/` | sse_parser → state → converter → tool_parser |
 | Anthropic compat layer | `src/anthropic_compat/` | request mapping → openai_adapter → response mapping |
+| Anthropic streaming response | `src/anthropic_compat/response/stream.rs` | OpenAI SSE → Anthropic SSE event stream |
+| Anthropic aggregate response | `src/anthropic_compat/response/aggregate.rs` | OpenAI JSON → Anthropic JSON |
 | OpenAI protocol types | `src/openai_adapter/types.rs` | Request/response structs, `#![allow(dead_code)]` |
 | Model listing | `src/openai_adapter/models.rs` | Model registry and listing |
 | HTTP server/routes | `src/server/` | handlers → stream → error |
@@ -200,9 +214,16 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 - **Module files**: `foo.rs` declares sub-modules, `foo/` contains implementation
 - **Comments**: Chinese in source files (team preference)
 - **Errors**: Chinese error messages for user-facing output
-- **Logging**: `log` crate with explicit targets (see `docs/logging-spec.md`); `env_logger` in `main.rs` and examples. Untargeted logs (e.g., bare `log::info!`) are prohibited.
+- **Logging**: `log` crate with explicit targets. Untargeted logs (e.g., bare `log::info!`) are prohibited. Targets used:
+  - `ds_core::accounts`, `ds_core::client`, `ds_core::completions`, `ds_core::pow`
+  - `adapter` (for `openai_adapter`)
+  - `http::server`, `http::request`, `http::response` (for `server`)
+  - `anthropic_compat`, `anthropic_compat::request`, `anthropic_compat::response::stream`, `anthropic_compat::response::aggregate`
+  - See `docs/logging-spec.md` for full target/level mapping
 - **Visibility**: `pub(crate)` for types not part of the public API; facade modules keep submodules private with `mod`
 - **Tests**: All tests are inline (`#[cfg(test)]` within `src/` files). `request.rs` has sync unit tests for parsing logic; `response.rs` has `tokio::test` async tests for stream aggregation. No separate `tests/` directory.
+- **Test output**: `println!` / `eprintln!` are allowed inside `#[cfg(test)]` blocks for debugging test failures; they remain prohibited in library code
+- **Import grouping**: std → third-party → `crate::` → local (`super`, `self`), separated by blank lines
 
 ## Anti-Patterns
 
@@ -210,7 +231,7 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 - Do NOT implement provider logic outside its `*_core/` module
 - Do NOT commit `config.toml` (only `config.example.toml`)
 - Do NOT use `println!`/`eprintln!` in library code — use `log` crate with target
-- Do NOT use untargeted log macros — always specify `target: "crate::module"`
+- Do NOT use untargeted log macros — always specify `target: "..."`
 - Do NOT access `ds_core` directly from `anthropic_compat` — always go through `OpenAIAdapter`
 
 ## Commands

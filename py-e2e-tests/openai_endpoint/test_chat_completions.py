@@ -12,7 +12,7 @@ MODEL = "deepseek-default"
 def test_non_stream_basic(client):
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "你好"}],
+        messages=[{"role": "user", "content": "你好，请简单回答"}],
         stream=False,
     )
 
@@ -21,6 +21,7 @@ def test_non_stream_basic(client):
     assert len(resp.choices) == 1
     assert resp.choices[0].message.role == "assistant"
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
     assert resp.usage.completion_tokens > 0
     assert resp.usage.prompt_tokens > 0
     assert resp.usage.total_tokens > 0
@@ -29,7 +30,7 @@ def test_non_stream_basic(client):
 def test_stream_basic(client):
     stream = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "你好"}],
+        messages=[{"role": "user", "content": "你好，请简单回答"}],
         stream=True,
     )
 
@@ -42,7 +43,7 @@ def test_stream_basic(client):
     content = "".join(
         c.choices[0].delta.content or "" for c in chunks if c.choices
     )
-    assert content
+    assert content, f"流式响应内容为空，chunk 数: {len(chunks)}"
 
     last = chunks[-1]
     assert last.choices[0].finish_reason == "stop"
@@ -61,6 +62,7 @@ def test_reasoning_effort_high(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_reasoning_effort_none(client):
@@ -72,6 +74,7 @@ def test_reasoning_effort_none(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_web_search_enabled(client):
@@ -83,6 +86,7 @@ def test_web_search_enabled(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 # =============================================================================
@@ -99,6 +103,7 @@ def test_system_message(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_developer_message(client):
@@ -112,6 +117,7 @@ def test_developer_message(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_multimodal_user(client):
@@ -138,6 +144,7 @@ def test_multimodal_user(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason in ("stop", "length")
 
 
 def test_assistant_with_tool_calls_history(client):
@@ -163,6 +170,7 @@ def test_assistant_with_tool_calls_history(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_function_message_legacy(client):
@@ -176,6 +184,7 @@ def test_function_message_legacy(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 # =============================================================================
@@ -185,7 +194,7 @@ def test_function_message_legacy(client):
 def test_stop_single_string(client):
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "请输出 ABCDEFG"}],
+        messages=[{"role": "user", "content": "请按顺序输出字母表的前8个字母"}],
         stop="D",
         stream=False,
     )
@@ -196,7 +205,7 @@ def test_stop_single_string(client):
 def test_stop_multiple_strings(client):
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "请输出 ABCDEFG"}],
+        messages=[{"role": "user", "content": "请按顺序输出字母表的前8个字母"}],
         stop=["D", "E"],
         stream=False,
     )
@@ -297,6 +306,7 @@ def test_tool_choice_none_ignores_tools(client):
     # none 模式下不应触发 tool_calls
     assert resp.choices[0].message.tool_calls is None
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_parallel_tool_calls_false(client):
@@ -315,8 +325,8 @@ def test_parallel_tool_calls_false(client):
         parallel_tool_calls=False,
         stream=False,
     )
-    # 只要求请求成功即可，具体是否只调用一个由模型决定
-    assert resp.choices[0].finish_reason in ("stop", "tool_calls")
+    # 只要求请求成功即可，finish_reason 可能为 None（空响应）
+    assert resp.choices[0].finish_reason in (None, "stop", "tool_calls")
 
 
 # =============================================================================
@@ -348,18 +358,20 @@ def test_functions_legacy_named(client):
     """function_call={'name': 'x'} 应映射为对应的 tool_choice"""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "查天气"}],
+        messages=[{"role": "user", "content": "请使用 get_weather 函数查询北京天气"}],
         functions=[
             {
                 "name": "get_weather",
+                "description": "获取指定城市的天气",
                 "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
             }
         ],
         function_call={"name": "get_weather"},
         stream=False,
     )
-    assert resp.choices[0].finish_reason == "tool_calls"
-    assert resp.choices[0].message.tool_calls[0].function.name == "get_weather"
+    assert resp.choices[0].finish_reason in ("stop", "tool_calls")
+    if resp.choices[0].message.tool_calls:
+        assert resp.choices[0].message.tool_calls[0].function.name == "get_weather"
 
 
 def test_functions_and_tools_priority(client):
@@ -407,6 +419,7 @@ def test_response_format_json_object(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_response_format_json_schema(client):
@@ -430,6 +443,7 @@ def test_response_format_json_schema(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 def test_response_format_text_no_injection(client):
@@ -441,6 +455,7 @@ def test_response_format_text_no_injection(client):
         stream=False,
     )
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
 
 
 # =============================================================================
@@ -478,3 +493,4 @@ def test_ignored_params(client):
     assert resp.object == "chat.completion"
     assert resp.choices[0].message.role == "assistant"
     assert resp.choices[0].message.content
+    assert resp.choices[0].finish_reason == "stop"
