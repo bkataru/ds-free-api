@@ -68,6 +68,7 @@ pin_project! {
         tools_present: bool,
         buffered_reasoning: String,
         pending_finish: bool,
+        pending_reasoning_flush: bool,
     }
 }
 
@@ -91,6 +92,7 @@ impl<S> ConverterStream<S> {
             usage_value: None,
             tools_present,
             buffered_reasoning: String::new(),
+            pending_reasoning_flush: false,
             pending_finish: false,
         }
     }
@@ -198,6 +200,8 @@ where
                         // Emit pending usage before finishing
                         if *this.include_usage {
                             if let Some(u) = this.usage_value.take() {
+                                // Don't return yet - set flag to flush reasoning next
+                                *this.pending_reasoning_flush = true;
                                 return Poll::Ready(Some(Ok(make_usage_chunk(
                                     make_usage(*this.prompt_tokens, u),
                                     this.model,
@@ -206,6 +210,7 @@ where
                         }
                         // Flush buffered reasoning as content when tools_present
                         if *this.tools_present && !this.buffered_reasoning.is_empty() {
+                            *this.pending_finish = true;
                             let reasoning = std::mem::replace(this.buffered_reasoning, String::new());
                             return Poll::Ready(Some(Ok(make_chunk(
                                 this.model,
@@ -227,6 +232,28 @@ where
                 },
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(None) => {
+                    // First, check if we need to flush reasoning (after usage was emitted)
+                    if *this.pending_reasoning_flush {
+                        *this.pending_reasoning_flush = false;
+                        *this.pending_finish = true;
+                        // Flush any remaining buffered reasoning
+                        if !this.buffered_reasoning.is_empty() {
+                            let buffered = std::mem::take(this.buffered_reasoning);
+                            return Poll::Ready(Some(Ok(make_chunk(
+                                this.model,
+                                Delta {
+                                    content: Some(buffered),
+                                    ..Default::default()
+                                },
+                                None,
+                            ))));
+                        }
+                    }
+                    // Emit pending finish chunk if we were waiting to flush reasoning
+                    if *this.pending_finish {
+                        *this.pending_finish = false;
+                        return Poll::Ready(Some(Ok(make_chunk(this.model, Delta::default(), Some("stop")))));
+                    }
                     if *this.finished
                         && *this.include_usage
                         && let Some(u) = this.usage_value.take()
@@ -326,10 +353,10 @@ mod tests {
             Ok(DsFrame::Usage(42)),
             Ok(DsFrame::Finish),
         ]);
-        let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 100, true);
+        let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), true, false, 100, true);
         let chunk1 = conv.next().await.unwrap().unwrap();
         // Should emit usage first
-        assert_eq!(chunk1.usage.unwrap().total_tokens, 42);
+        assert_eq!(chunk1.usage.unwrap().total_tokens, 142);
         let chunk2 = conv.next().await.unwrap().unwrap();
         // Then flush reasoning
         assert_eq!(chunk2.choices[0].delta.content.as_deref(), Some("Thinking..."));
