@@ -78,11 +78,20 @@ password = "pass1"
 ```text
 rivigol378@tatefarm.com
 test12345
+
+counterfeit1341@wplacetools.com
+test12345
+
+idyllic4202@wplacetools.com
+test12345
+
+slowly1285@wplacetools.com
+test12345
 ```
 
 想要自己多整几个账号并发的话，可以研究一下临时邮箱（有些可能不行），然后加魔法在国际版中多注册几个账号。
 
-推荐临时邮箱网站：[temp-mail.org](https://temp-mail.org/en/10minutemail)
+推荐临时邮箱网站：[tempmail.la](https://tempmail.la/) (有些后缀可能不行, 建议多尝试几次)
 
 ## API 端点
 

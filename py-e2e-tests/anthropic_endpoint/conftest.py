@@ -29,12 +29,3 @@ def pytest_runtest_setup(item):
             c.models.list(timeout=5)
         except (APIConnectionError, AuthenticationError) as exc:
             pytest.skip(f"本地服务未启动或无法连接: {exc}")
-
-
-@pytest.fixture(autouse=True)
-def delay_between_tests():
-    """每个测试结束后休眠 2.5 秒，避免对单一账号/后端造成过高频率。"""
-    yield
-    import time
-
-    time.sleep(2.5)

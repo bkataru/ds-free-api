@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use futures::{Stream, TryStreamExt};
+use futures::Stream;
 use pin_project_lite::pin_project;
 
 use crate::ds_core::CoreError;
@@ -103,8 +103,7 @@ impl Completions {
         let stream = self
             .client
             .edit_message(&token, &pow_header, &payload)
-            .await?
-            .map_err(|e| CoreError::ProviderError(e.to_string()));
+            .await?;
 
         Ok(Box::pin(GuardedStream::new(stream, guard)))
     }

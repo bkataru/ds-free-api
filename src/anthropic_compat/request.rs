@@ -44,6 +44,9 @@ pub struct MessagesRequest {
     pub metadata: Option<Metadata>,
     #[serde(default)]
     pub output_config: Option<OutputConfig>,
+    /// 智能搜索选项（Anthropic 协议扩展字段，映射为 OpenAI web_search_options）
+    #[serde(default)]
+    pub web_search_options: Option<serde_json::Value>,
 
     // 兼容字段：解析但不消费
     #[serde(default)]
@@ -355,6 +358,11 @@ pub fn to_openai_request(body: &[u8]) -> Result<Vec<u8>, AnthropicCompatError> {
                 "json_schema": fmt.schema
             }),
         );
+    }
+
+    // web_search_options -> web_search_options
+    if let Some(opts) = req.web_search_options {
+        openai.insert("web_search_options".to_string(), opts);
     }
 
     serde_json::to_vec(&openai)
@@ -918,6 +926,20 @@ mod tests {
             content[0]["image_url"]["url"],
             "https://example.com/img.jpg"
         );
+    }
+
+    #[test]
+    fn web_search_options_mapped() {
+        let body = br#"{
+            "model": "deepseek-default",
+            "messages": [{"role": "user", "content": "latest news"}],
+            "max_tokens": 1024,
+            "web_search_options": {"search_context_size": "high"}
+        }"#;
+
+        let openai = parse_openai(&to_openai_request(body).unwrap());
+        let opts = &openai["web_search_options"];
+        assert_eq!(opts["search_context_size"], "high");
     }
 
     #[test]

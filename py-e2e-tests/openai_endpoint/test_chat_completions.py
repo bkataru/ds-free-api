@@ -2,22 +2,37 @@ import pytest
 
 pytestmark = [pytest.mark.requires_server]
 
-MODEL = "deepseek-default"
+
+# =============================================================================
+# 模型覆盖策略
+#
+# 基础测试（非流/流式）在两个模型上各跑一遍 —— 保证协议响应结构一致性。
+# 扩展能力测试集中在 deepseek-default，expert 只跑基础验证。
+#
+# 模型分配：
+#   deepseek-default  → 基础 + 全部扩展能力测试
+#   deepseek-expert   → 基础测试
+# =============================================================================
+
+DEFAULT_MODEL = "deepseek-default"
+EXPERT_MODEL = "deepseek-expert"
 
 
 # =============================================================================
-# 基础功能
+# 基础功能（参数化：两个模型各跑一遍）
 # =============================================================================
 
-def test_non_stream_basic(client):
+
+@pytest.mark.parametrize("model", [DEFAULT_MODEL, EXPERT_MODEL], ids=["default", "expert"])
+def test_non_stream_basic(client, model):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[{"role": "user", "content": "你好，请简单回答"}],
         stream=False,
     )
 
     assert resp.object == "chat.completion"
-    assert resp.model == MODEL
+    assert resp.model == model
     assert len(resp.choices) == 1
     assert resp.choices[0].message.role == "assistant"
     assert resp.choices[0].message.content
@@ -27,9 +42,10 @@ def test_non_stream_basic(client):
     assert resp.usage.total_tokens > 0
 
 
-def test_stream_basic(client):
+@pytest.mark.parametrize("model", [DEFAULT_MODEL, EXPERT_MODEL], ids=["default", "expert"])
+def test_stream_basic(client, model):
     stream = client.chat.completions.create(
-        model=MODEL,
+        model=model,
         messages=[{"role": "user", "content": "你好，请简单回答"}],
         stream=True,
     )
@@ -50,13 +66,14 @@ def test_stream_basic(client):
 
 
 # =============================================================================
-# 能力开关
+# 能力开关（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_reasoning_effort_high(client):
     """reasoning_effort=high 显式开启深度思考（默认行为）"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "1+1="}],
         reasoning_effort="high",
         stream=False,
@@ -68,7 +85,7 @@ def test_reasoning_effort_high(client):
 def test_reasoning_effort_none(client):
     """reasoning_effort=none 关闭深度思考"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "1+1="}],
         reasoning_effort="none",
         stream=False,
@@ -80,7 +97,7 @@ def test_reasoning_effort_none(client):
 def test_web_search_enabled(client):
     """web_search_options 开启智能搜索"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "今天有什么新闻"}],
         web_search_options={"search_context_size": "high"},
         stream=False,
@@ -90,12 +107,13 @@ def test_web_search_enabled(client):
 
 
 # =============================================================================
-# 消息格式
+# 消息格式（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_system_message(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": "你是一个数学助手，只回答数字。"},
             {"role": "user", "content": "2+3="},
@@ -109,7 +127,7 @@ def test_system_message(client):
 def test_developer_message(client):
     """developer 角色作为 system 的替代，适配器应兼容解析"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "developer", "content": "用中文回答。"},
             {"role": "user", "content": "hello"},
@@ -123,7 +141,7 @@ def test_developer_message(client):
 def test_multimodal_user(client):
     """多模态消息（image_url / input_audio / file）应能正常解析不报错"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[
             {
                 "role": "user",
@@ -150,7 +168,7 @@ def test_multimodal_user(client):
 def test_assistant_with_tool_calls_history(client):
     """assistant 消息携带 tool_calls 历史应能正常解析"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "user", "content": "查北京天气"},
             {
@@ -176,7 +194,7 @@ def test_assistant_with_tool_calls_history(client):
 def test_function_message_legacy(client):
     """已弃用的 function 角色应兼容解析"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "user", "content": "计算"},
             {"role": "function", "name": "calc", "content": "42"},
@@ -188,12 +206,13 @@ def test_function_message_legacy(client):
 
 
 # =============================================================================
-# Stop 序列
+# Stop 序列（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_stop_single_string(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "请按顺序输出字母表的前8个字母"}],
         stop="D",
         stream=False,
@@ -204,7 +223,7 @@ def test_stop_single_string(client):
 
 def test_stop_multiple_strings(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "请按顺序输出字母表的前8个字母"}],
         stop=["D", "E"],
         stream=False,
@@ -213,12 +232,13 @@ def test_stop_multiple_strings(client):
 
 
 # =============================================================================
-# Stream 选项
+# Stream 选项（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_stream_include_usage(client):
     stream = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "你好"}],
         stream=True,
         stream_options={"include_usage": True},
@@ -238,12 +258,13 @@ def test_stream_include_usage(client):
 
 
 # =============================================================================
-# Tool Choice 模式
+# Tool Choice 模式（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_tool_choice_required(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "查北京天气"}],
         tools=[
             {
@@ -265,7 +286,7 @@ def test_tool_choice_required(client):
 
 def test_tool_choice_named_function(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "查北京天气"}],
         tools=[
             {
@@ -292,7 +313,7 @@ def test_tool_choice_named_function(client):
 
 def test_tool_choice_none_ignores_tools(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "你好"}],
         tools=[
             {
@@ -311,7 +332,7 @@ def test_tool_choice_none_ignores_tools(client):
 
 def test_parallel_tool_calls_false(client):
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "同时查北京和上海天气"}],
         tools=[
             {
@@ -330,13 +351,14 @@ def test_parallel_tool_calls_false(client):
 
 
 # =============================================================================
-# 已弃用 functions / function_call 兼容
+# 已弃用 functions / function_call 兼容（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_functions_legacy_auto(client):
     """functions + function_call='auto' 应映射为 tools + tool_choice='auto'"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "查北京天气"}],
         functions=[
             {
@@ -357,7 +379,7 @@ def test_functions_legacy_auto(client):
 def test_functions_legacy_named(client):
     """function_call={'name': 'x'} 应映射为对应的 tool_choice"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "请使用 get_weather 函数查询北京天气"}],
         functions=[
             {
@@ -377,7 +399,7 @@ def test_functions_legacy_named(client):
 def test_functions_and_tools_priority(client):
     """tools 和 functions 同时存在时优先使用 tools"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "查时间"}],
         tools=[
             {
@@ -407,13 +429,14 @@ def test_functions_and_tools_priority(client):
 
 
 # =============================================================================
-# response_format 降级兼容
+# response_format 降级兼容（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_response_format_json_object(client):
     """response_format={'type': 'json_object'} 应在 prompt 中注入 JSON 约束"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "输出用户信息，包括姓名和年龄"}],
         response_format={"type": "json_object"},
         stream=False,
@@ -425,7 +448,7 @@ def test_response_format_json_object(client):
 def test_response_format_json_schema(client):
     """response_format={'type': 'json_schema'} 应在 prompt 中注入 schema 约束"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "输出用户信息"}],
         response_format={
             "type": "json_schema",
@@ -449,7 +472,7 @@ def test_response_format_json_schema(client):
 def test_response_format_text_no_injection(client):
     """response_format={'type': 'text'} 不应注入额外约束"""
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "你好"}],
         response_format={"type": "text"},
         stream=False,
@@ -459,8 +482,9 @@ def test_response_format_text_no_injection(client):
 
 
 # =============================================================================
-# 解析但忽略的字段（不应报错）
+# 解析但忽略的字段（集中在 deepseek-default）
 # =============================================================================
+
 
 def test_ignored_params(client):
     """
@@ -470,7 +494,7 @@ def test_ignored_params(client):
     user, safety_identifier, prompt_cache_key, modalities, prediction。
     """
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=DEFAULT_MODEL,
         messages=[{"role": "user", "content": "你好"}],
         temperature=0.5,
         top_p=0.9,

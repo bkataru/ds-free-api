@@ -73,16 +73,25 @@ area_code = ""
 password = "pass1"
 ```
 
-Here's a free test account — please don't send sensitive info through it (the program deletes sessions on cleanup, but leftovers may persist).
+Here are some free test accounts — please don't send sensitive info through them (the program deletes sessions on cleanup, but leftovers may persist).
 
 ```text
 rivigol378@tatefarm.com
+test12345
+
+counterfeit1341@wplacetools.com
+test12345
+
+idyllic4202@wplacetools.com
+test12345
+
+slowly1285@wplacetools.com
 test12345
 ```
 
 If you want multiple accounts for concurrency, look into temporary email services (some may not work) and use a VPN to register on the international version.
 
-Recommended temp-mail site: [temp-mail.org](https://temp-mail.org/en/10minutemail)
+Recommended temp-mail site: [tempmail.la](https://tempmail.la/) (some domains may not work, try a few times)
 
 ## API Endpoints
 

@@ -32,8 +32,9 @@ serve *ARGS:
   cargo run -- "$@"
 
 # Run Python e2e tests (requires server running; will skip with hint if not)
+# -n 2: 并发测试（DeepSeek 免费 API 不支持更高并发，4 workers 会触发大量空响应）
 e2e *ARGS:
-  cd py-e2e-tests && uv run python -m pytest "$@"
+  cd py-e2e-tests && uv run python -m pytest -n 2 "$@"
 
 # Start server with e2e test config
 e2e-serve:

@@ -8,6 +8,13 @@ Rust API proxy exposing free DeepSeek model endpoints. Translates standard OpenA
 
 Requires Rust **1.95.0** (pinned in `rust-toolchain.toml`) with **edition 2024**.
 
+Key dependencies and why they matter:
+- `wasmtime` — executes DeepSeek's PoW WASM solver; the entire PoW system depends on this
+- `tiktoken-rs` — client-side prompt token counting (DeepSeek returns 0 for `prompt_tokens`)
+- `pin-project-lite` — underpins every streaming response wrapper (`SseStream`, `StateStream`, etc.)
+- `axum` / `reqwest` — HTTP server and client respectively
+- `tokio` with `signal` feature — async runtime with graceful shutdown on SIGTERM/SIGINT
+
 ## Principles
 
 ### 1. Single Responsibility
@@ -79,7 +86,11 @@ src/
 **Additional files not in src/**:
 - `examples/openai_adapter_cli/` — JSON request samples (basic_chat, reasoning_search, stop_sequence, stream_options, tool_call)
 - `examples/*-script.txt` — Scripted input for CLI examples
-- `py-e2e-tests/` — Python end-to-end test suite (gitignored runtime artifacts)
+- `py-e2e-tests/` — Python e2e test suite using pytest + uv:
+  - `openai_endpoint/` — OpenAI-compatible `/v1/chat/completions` tests
+  - `anthropic_endpoint/` — Anthropic-compatible `/v1/messages` tests
+  - `config.toml` — e2e-specific server config (port 5317)
+  - `conftest.py` — shared fixtures (server startup, HTTP client)
 
 ### Facade Module Pattern
 
@@ -95,6 +106,13 @@ This means the file tree does not directly map to the public API. To understand 
 - `main.rs` is a thin binary wrapper (~10 lines): init `env_logger`, parse CLI args, load config, call `server::run()`
 - `lib.rs` defines the public API surface: `Config`, `DeepSeekCore`, `OpenAIAdapter`, `AnthropicCompat`, `StreamResponse`, etc.
 - The crate can be built as both a library (`cargo build --lib`) and a binary (`cargo build --bin ds-free-api`)
+
+### StreamResponse Type
+
+`StreamResponse` is the unifying bridge between adapter layers and the HTTP server:
+- Every adapter's streaming method returns `StreamResponse` (a boxed `Stream<Item = Result<Bytes>> + Send`)
+- `server/stream.rs::SseBody` wraps `StreamResponse` and converts it into an `axum::body::Body`
+- This decouples the adapters from the HTTP framework — they produce bytes, the server handles SSE framing
 
 ## Key Architectural Patterns
 
@@ -258,6 +276,10 @@ just check
 just serve
 RUST_LOG=debug just serve
 
+# Module-level logging filters
+RUST_LOG=ds_core::accounts=debug,ds_core::client=warn,info just serve
+RUST_LOG=adapter=debug,anthropic_compat=debug just serve
+
 # Run ds_core_cli example
 just ds-core-cli
 RUST_LOG=debug just ds-core-cli
@@ -266,9 +288,10 @@ just ds-core-cli -- source examples/ds_core_cli-script.txt
 # Run openai_adapter_cli example
 just openai-adapter-cli
 
-# Run specific test modules
+# Run specific test modules (pass test name filter and args)
 just test-adapter-request
 just test-adapter-response
+just test-adapter-request converter_emits_role_and_content -- --exact
 
 # Run a single Rust test (use -- --exact for precise name matching)
 cargo test converter_emits_role_and_content -- --exact
@@ -276,7 +299,10 @@ cargo test converter_emits_role_and_content -- --exact
 # Run all Rust tests
 cargo test
 
-# Run Python e2e tests (requires server running on port 5317)
+# Run only library tests (skips example compilation, faster iteration)
+cargo test --lib
+
+# Run Python e2e tests (requires `uv` and server running on port 5317)
 just e2e
 
 # Start server with e2e test config
