@@ -80,11 +80,11 @@ fn default_model_types() -> Vec<String> {
 }
 
 fn default_max_input_tokens() -> Vec<u32> {
-    vec![128_000, 1_000_000]
+    vec![1_048_576, 1_048_576]
 }
 
 fn default_max_output_tokens() -> Vec<u32> {
-    vec![16_384, 16_384]
+    vec![384_000, 384_000]
 }
 
 impl DeepSeekConfig {
