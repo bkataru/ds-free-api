@@ -65,6 +65,8 @@ pin_project! {
         prompt_tokens: u32,
         finished: bool,
         usage_value: Option<u32>,
+        tools_present: bool,
+        buffered_reasoning: String,
     }
 }
 
@@ -76,6 +78,7 @@ impl<S> ConverterStream<S> {
         include_usage: bool,
         include_obfuscation: bool,
         prompt_tokens: u32,
+        tools_present: bool,
     ) -> Self {
         Self {
             inner,
@@ -85,6 +88,8 @@ impl<S> ConverterStream<S> {
             prompt_tokens,
             finished: false,
             usage_value: None,
+            tools_present,
+            buffered_reasoning: String::new(),
         }
     }
 }
@@ -123,6 +128,12 @@ where
                         ))));
                     }
                     DsFrame::ThinkDelta(text) => {
+                        if *this.tools_present {
+                            // Buffer reasoning for later prepending to content
+                            this.buffered_reasoning.push_str(&text);
+                            continue;
+                        }
+                        // No tools: emit as reasoning_content
                         return Poll::Ready(Some(Ok(make_chunk(
                             this.model,
                             Delta {
@@ -133,16 +144,36 @@ where
                         ))));
                     }
                     DsFrame::ContentDelta(text) => {
+                        let content = if !this.buffered_reasoning.is_empty() {
+                            let combined = format!("{}{}", *this.buffered_reasoning, text);
+                            this.buffered_reasoning.clear();
+                            combined
+                        } else {
+                            text
+                        };
                         return Poll::Ready(Some(Ok(make_chunk(
                             this.model,
                             Delta {
-                                content: Some(text),
+                                content: Some(content),
                                 ..Default::default()
                             },
                             None,
                         ))));
                     }
                     DsFrame::Status(status) if status == "FINISHED" && !*this.finished => {
+                        // Flush any buffered reasoning as content before finishing
+                        if !this.buffered_reasoning.is_empty() {
+                            let buffered = std::mem::take(this.buffered_reasoning);
+                            *this.finished = true;
+                            return Poll::Ready(Some(Ok(make_chunk(
+                                this.model,
+                                Delta {
+                                    content: Some(buffered),
+                                    ..Default::default()
+                                },
+                                Some("stop"),
+                            ))));
+                        }
                         *this.finished = true;
                         return Poll::Ready(Some(Ok(make_chunk(
                             this.model,
@@ -181,6 +212,18 @@ where
                             this.model,
                         ))));
                     }
+                    // Flush any remaining buffered reasoning
+                    if !this.buffered_reasoning.is_empty() {
+                        let buffered = std::mem::take(this.buffered_reasoning);
+                        return Poll::Ready(Some(Ok(make_chunk(
+                            this.model,
+                            Delta {
+                                content: Some(buffered),
+                                ..Default::default()
+                            },
+                            None,
+                        ))));
+                    }
                     return Poll::Ready(None);
                 }
                 Poll::Pending => return Poll::Pending,
@@ -203,10 +246,37 @@ mod tests {
             Ok(DsFrame::Role),
             Ok(DsFrame::ContentDelta("hello".into())),
         ]);
-        let mut conv = ConverterStream::new(frames, "deepseek-default".into(), false, false, 0);
+        let mut conv = ConverterStream::new(frames, "deepseek-default".into(), false, false, 0, false);
         let chunk1 = conv.next().await.unwrap().unwrap();
         assert_eq!(chunk1.choices[0].delta.role, Some("assistant"));
         let chunk2 = conv.next().await.unwrap().unwrap();
         assert_eq!(chunk2.choices[0].delta.content.as_deref(), Some("hello"));
+    }
+
+    #[tokio::test]
+    async fn converter_buffers_reasoning_when_tools_present() {
+        let frames = futures::stream::iter(vec![
+            Ok(DsFrame::ThinkDelta("Thinking... ".into())),
+            Ok(DsFrame::ContentDelta("Hello".into())),
+        ]);
+        let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 0, true);
+        let chunk1 = conv.next().await.unwrap().unwrap();
+        // First chunk should have role
+        let chunk2 = conv.next().await.unwrap().unwrap();
+        // Second chunk should have combined content
+        assert_eq!(chunk2.choices[0].delta.reasoning_content, None);
+        assert_eq!(chunk2.choices[0].delta.content.as_deref(), Some("Thinking... Hello"));
+    }
+
+    #[tokio::test]
+    async fn converter_emits_reasoning_when_no_tools() {
+        let frames = futures::stream::iter(vec![
+            Ok(DsFrame::ThinkDelta("Thinking...".into())),
+            Ok(DsFrame::ContentDelta("Hello".into())),
+        ]);
+        let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 0, false);
+        let chunk1 = conv.next().await.unwrap().unwrap();
+        // First chunk should have reasoning_content
+        assert_eq!(chunk1.choices[0].delta.reasoning_content, Some("Thinking...".into()));
     }
 }

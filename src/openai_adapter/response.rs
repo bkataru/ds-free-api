@@ -159,6 +159,7 @@ pub(crate) fn stream<S>(
     include_obfuscation: bool,
     stop: Vec<String>,
     prompt_tokens: u32,
+    tools_present: bool,
 ) -> StreamResponse
 where
     S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send + 'static,
@@ -176,6 +177,7 @@ where
         include_usage,
         include_obfuscation,
         prompt_tokens,
+       tools_present,
     );
     let tool_parsed = tool_parser::ToolCallStream::new(converted, model);
     let stop_stream = StopStream {
@@ -195,6 +197,7 @@ pub(crate) async fn aggregate<S>(
     model: String,
     stop: Vec<String>,
     prompt_tokens: u32,
+    tools_present: bool,
 ) -> Result<Vec<u8>, OpenAIAdapterError>
 where
     S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send,
@@ -203,7 +206,7 @@ where
     let sse = sse_parser::SseStream::new(ds_stream);
     let state_stream = state::StateStream::new(sse);
     let converted =
-        converter::ConverterStream::new(state_stream, model.clone(), true, false, prompt_tokens);
+       converter::ConverterStream::new(state_stream, model.clone(), true, false, prompt_tokens, tools_present);
 
     let mut content = String::new();
     let mut reasoning = String::new();
@@ -330,7 +333,7 @@ mod tests {
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
-        let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
+        let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
             .await
             .unwrap();
         let completion: serde_json::Value = serde_json::from_slice(&json).unwrap();
@@ -357,7 +360,7 @@ mod tests {
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"answer\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
-        let json = aggregate(stream, "deepseek-expert".into(), vec![], 0)
+        let json = aggregate(stream, "deepseek-expert".into(), vec![], 0, false)
             .await
             .unwrap();
         let completion: serde_json::Value = serde_json::from_slice(&json).unwrap();
@@ -379,7 +382,7 @@ mod tests {
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
-        let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
+        let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
             .await
             .unwrap();
         let completion: serde_json::Value = serde_json::from_slice(&json).unwrap();
@@ -404,7 +407,7 @@ mod tests {
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {}}]</tool_calls> trailing text\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
-        let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
+        let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
             .await
             .unwrap();
         let completion: serde_json::Value = serde_json::from_slice(&json).unwrap();
@@ -741,7 +744,7 @@ mod tests {
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
-        let json = aggregate(stream, "deepseek-default".into(), vec![], 0)
+        let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
             .await
             .unwrap();
         let completion: serde_json::Value = serde_json::from_slice(&json).unwrap();

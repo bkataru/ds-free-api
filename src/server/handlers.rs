@@ -66,6 +66,7 @@ async fn handle_chat(
     let include_usage = req.include_usage;
     let include_obfuscation = req.include_obfuscation;
     let prompt_tokens = req.prompt_tokens;
+    let tools_present = req.tools_present;
 
     let ds_stream = adapter.try_chat(req.ds_req).await?;
 
@@ -78,10 +79,11 @@ async fn handle_chat(
             include_obfuscation,
             stop,
             prompt_tokens,
+            tools_present,
         )))
     } else {
         let json =
-            crate::openai_adapter::response::aggregate(ds_stream, model, stop, prompt_tokens)
+           crate::openai_adapter::response::aggregate(ds_stream, model, stop, prompt_tokens, tools_present)
                 .await?;
         log::debug!(target: "http::response", "200 JSON response {} bytes", json.len());
         Ok(ChatResult::Json(json))

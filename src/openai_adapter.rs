@@ -56,7 +56,7 @@ impl OpenAIAdapter {
     pub async fn chat_completions(&self, body: &[u8]) -> Result<Vec<u8>, OpenAIAdapterError> {
         let req = request::parse(body, &self.model_registry)?;
         let stream = self.try_chat(req.ds_req).await?;
-        response::aggregate(stream, req.model, req.stop, req.prompt_tokens).await
+        response::aggregate(stream, req.model, req.stop, req.prompt_tokens, req.tools_present).await
     }
 
     /// POST /v1/chat/completions (流式)
@@ -73,6 +73,7 @@ impl OpenAIAdapter {
             req.include_obfuscation,
             req.stop,
             req.prompt_tokens,
+            req.tools_present,
         ))
     }
 

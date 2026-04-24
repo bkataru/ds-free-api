@@ -1,0 +1,5 @@
+[2026-04-24T13:12:27Z INFO  ds_core::accounts] 账号 slowly1285@wplacetools.com 初始化成功
+[2026-04-24T13:12:27Z INFO  ds_core::accounts] 账号 idyllic4202@wplacetools.com 初始化成功
+[2026-04-24T13:12:27Z INFO  ds_core::accounts] 账号 counterfeit1341@wplacetools.com 初始化成功
+[2026-04-24T13:12:27Z INFO  http::server] openai兼容base_url: http://127.0.0.1:5317
+[2026-04-24T13:12:27Z INFO  http::server] anthropic兼容base_url: http://127.0.0.1:5317/anthropic

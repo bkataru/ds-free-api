@@ -29,6 +29,7 @@ pub struct AdapterRequest {
     pub include_obfuscation: bool,
     pub stop: Vec<String>,
     pub prompt_tokens: u32,
+        pub tools_present: bool,
 }
 
 /// 解析 JSON 请求体，执行校验、默认值收敛和能力标志解析
@@ -85,6 +86,8 @@ pub fn parse(
         .map(|bpe| bpe.encode_with_special_tokens(&prompt).len() as u32)
         .unwrap_or(0);
 
+    let tools_present = req.tools.as_ref().map_or(false, |t| !t.is_empty());
+
     debug!(target: "adapter", "模型解析结果: thinking={}, search={}", model_res.thinking_enabled, model_res.search_enabled);
 
     Ok(AdapterRequest {
@@ -100,6 +103,7 @@ pub fn parse(
         include_obfuscation: norm.include_obfuscation,
         stop: norm.stop,
         prompt_tokens,
+        tools_present,
     })
 }
 

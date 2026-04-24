@@ -67,6 +67,7 @@ impl AnthropicCompat {
             openai_req.include_obfuscation,
             openai_req.stop,
             openai_req.prompt_tokens,
+            openai_req.tools_present,
         );
         Ok(response::from_chat_completion_stream(
             openai_stream,
