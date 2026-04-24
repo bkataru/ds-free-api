@@ -67,6 +67,7 @@ pin_project! {
         usage_value: Option<u32>,
         tools_present: bool,
         buffered_reasoning: String,
+        pending_finish: bool,
     }
 }
 
@@ -90,6 +91,7 @@ impl<S> ConverterStream<S> {
             usage_value: None,
             tools_present,
             buffered_reasoning: String::new(),
+            pending_finish: false,
         }
     }
 }
@@ -193,6 +195,28 @@ where
                     }
                     DsFrame::Finish if !*this.finished => {
                         *this.finished = true;
+                        // Emit pending usage before finishing
+                        if *this.include_usage {
+                            if let Some(u) = this.usage_value.take() {
+                                return Poll::Ready(Some(Ok(make_usage_chunk(
+                                    make_usage(*this.prompt_tokens, u),
+                                    this.model,
+                                ))));
+                            }
+                        }
+                        // Flush buffered reasoning as content when tools_present
+                        if *this.tools_present && !this.buffered_reasoning.is_empty() {
+                            let reasoning = std::mem::replace(this.buffered_reasoning, String::new());
+                            return Poll::Ready(Some(Ok(make_chunk(
+                                this.model,
+                                Delta {
+                                    content: Some(reasoning),
+                                    ..Default::default()
+                                },
+                                None,
+                            ))));
+                        }
+                        // Default: emit finish chunk
                         return Poll::Ready(Some(Ok(make_chunk(
                             this.model,
                             Delta::default(),
@@ -260,12 +284,10 @@ mod tests {
             Ok(DsFrame::ContentDelta("Hello".into())),
         ]);
         let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 0, true);
-        let chunk1 = conv.next().await.unwrap().unwrap();
-        // First chunk should have role
-        let chunk2 = conv.next().await.unwrap().unwrap();
-        // Second chunk should have combined content
-        assert_eq!(chunk2.choices[0].delta.reasoning_content, None);
-        assert_eq!(chunk2.choices[0].delta.content.as_deref(), Some("Thinking... Hello"));
+        let chunk = conv.next().await.unwrap().unwrap();
+        // First chunk should have combined content (reasoning buffered and prepended)
+        assert_eq!(chunk.choices[0].delta.reasoning_content, None);
+        assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("Thinking... Hello"));
     }
 
     #[tokio::test]
@@ -275,8 +297,44 @@ mod tests {
             Ok(DsFrame::ContentDelta("Hello".into())),
         ]);
         let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 0, false);
-        let chunk1 = conv.next().await.unwrap().unwrap();
+        let chunk = conv.next().await.unwrap().unwrap();
         // First chunk should have reasoning_content
-        assert_eq!(chunk1.choices[0].delta.reasoning_content, Some("Thinking...".into()));
+        assert_eq!(chunk.choices[0].delta.reasoning_content, Some("Thinking...".into()));
     }
-}
+    
+    #[tokio::test]
+    async fn converter_flush_buffered_reasoning_with_finish() {
+        // Tools present, Finish should flush buffered reasoning as content
+        let frames = futures::stream::iter(vec![
+            Ok(DsFrame::ThinkDelta("Thinking...".into())),
+            Ok(DsFrame::Finish),
+        ]);
+        let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 0, true);
+        let chunk1 = conv.next().await.unwrap().unwrap();
+        // Should have combined content (reasoning flushed)
+        assert_eq!(chunk1.choices[0].delta.content.as_deref(), Some("Thinking..."));
+        let chunk2 = conv.next().await.unwrap().unwrap();
+        // Should have finish
+        assert_eq!(chunk2.choices[0].finish_reason, Some("stop".into()));
+    }
+    
+    #[tokio::test]
+    async fn converter_finish_with_buffered_reasoning_and_usage() {
+        // Tools present, include_usage, Finish should emit usage then flush reasoning
+        let frames = futures::stream::iter(vec![
+            Ok(DsFrame::ThinkDelta("Thinking...".into())),
+            Ok(DsFrame::Usage(42)),
+            Ok(DsFrame::Finish),
+        ]);
+        let mut conv = ConverterStream::new(frames, "deepseek-expert".into(), false, false, 100, true);
+        let chunk1 = conv.next().await.unwrap().unwrap();
+        // Should emit usage first
+        assert_eq!(chunk1.usage.unwrap().total_tokens, 42);
+        let chunk2 = conv.next().await.unwrap().unwrap();
+        // Then flush reasoning
+        assert_eq!(chunk2.choices[0].delta.content.as_deref(), Some("Thinking..."));
+        let chunk3 = conv.next().await.unwrap().unwrap();
+        // Then finish
+        assert_eq!(chunk3.choices[0].finish_reason, Some("stop".into()));
+    }
+    }

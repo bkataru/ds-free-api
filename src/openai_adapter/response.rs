@@ -458,6 +458,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (plain_text) ===");
@@ -498,6 +499,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (include_usage) ===");
@@ -541,6 +543,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls) ===");
@@ -589,6 +592,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (fragmented_tool_calls_with_thinking) ===");
@@ -646,6 +650,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_search_and_open) ===");
@@ -691,6 +696,7 @@ mod tests {
             true,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (include_obfuscation) ===");
@@ -783,6 +789,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls with leading text, fragmented) ===");
@@ -845,6 +852,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (leading text + multi-chunk JSON fragments) ===");
@@ -892,6 +900,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (thinking + leading + fragmented JSON) ===");
@@ -940,6 +949,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (JSON split right after tool_call) ===");
@@ -971,6 +981,7 @@ mod tests {
             false,
             vec![],
             0,
+            false,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls, no leading text) ===");
