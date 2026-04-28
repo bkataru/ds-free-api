@@ -370,7 +370,7 @@ async fn health_check(
     model_type: &str,
 ) -> Result<(), PoolError> {
     debug!(target: "ds_core::accounts", "health_check model_type={}", model_type);
-    let challenge = client.create_pow_challenge(token).await?;
+    let challenge = client.create_pow_challenge(token, "/api/v0/chat/completion").await?;
 
     let result = solver.solve(&challenge)?;
     let pow_header = result.to_header();

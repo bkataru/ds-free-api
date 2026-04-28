@@ -147,6 +147,31 @@ pub struct ChallengeData {
     pub target_path: String,
 }
 
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct UploadFileData {
+    pub id: String,
+    pub status: String,
+    pub file_name: String,
+    pub file_size: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FetchFilesData {
+    pub files: Vec<FileInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct FileInfo {
+    pub id: String,
+    pub status: String,
+    pub file_name: String,
+    pub file_size: i64,
+    #[serde(default)]
+    pub token_usage: Option<i64>,
+}
 // Wrapper: `biz_data` nests a `challenge` object.
 #[derive(Debug, Deserialize)]
 struct ChallengeWrapper {
@@ -312,7 +337,7 @@ impl DsClient {
         Ok(())
     }
 
-    pub async fn create_pow_challenge(&self, token: &str) -> Result<ChallengeData, ClientError> {
+    pub async fn create_pow_challenge(&self, token: &str, target_path: &str) -> Result<ChallengeData, ClientError> {
         let resp = self
             .http
             .post(format!(
@@ -320,7 +345,7 @@ impl DsClient {
                 self.api_base, ENDPOINT_CHAT_CREATE_POW_CHALLENGE
             ))
             .headers(self.auth_headers(token)?)
-            .json(&serde_json::json!({ "target_path": "/api/v0/chat/completion" }))
+            .json(&serde_json::json!({ "target_path": target_path }))
             .send()
             .await?;
         let wrapper: ChallengeWrapper = Self::parse_envelope(resp).await?;
@@ -428,7 +453,7 @@ impl DsClient {
         filename: &str,
         content_type: &str,
         bytes: Vec<u8>,
-    ) -> Result<(), ClientError> {
+    ) -> Result<UploadFileData, ClientError> {
         let part = Part::bytes(bytes)
             .file_name(filename.to_string())
             .mime_str(content_type)?;
@@ -441,15 +466,14 @@ impl DsClient {
             .multipart(form)
             .send()
             .await?;
-        let _ = resp.bytes().await?;
-        Ok(())
+        Self::parse_envelope::<UploadFileData>(resp).await
     }
 
     /// Fetch file metadata (minimal HTTP helper; reserved for future callers).
     ///
     /// Note: the upstream API does not currently expose real file upload semantics.
     #[allow(dead_code)]
-    pub async fn fetch_files(&self, token: &str, file_ids: &[String]) -> Result<(), ClientError> {
+    pub async fn fetch_files(&self, token: &str, file_ids: &[String]) -> Result<FetchFilesData, ClientError> {
         let ids = file_ids.join(",");
         let resp = self
             .http
@@ -458,8 +482,7 @@ impl DsClient {
             .query(&[("file_ids", &ids)])
             .send()
             .await?;
-        let _ = resp.bytes().await?;
-        Ok(())
+        Self::parse_envelope::<FetchFilesData>(resp).await
     }
 
     pub async fn get_wasm(&self) -> Result<Bytes, ClientError> {

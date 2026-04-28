@@ -219,7 +219,7 @@ impl Completions {
     }
 
     async fn compute_pow(&self, token: &str) -> Result<String, CoreError> {
-        let challenge_data = self.client.create_pow_challenge(token).await?;
+        let challenge_data = self.client.create_pow_challenge(token, "/api/v0/chat/completion").await?;
         let result = self.solver.solve(&challenge_data).map_err(|e| {
             log::error!(target: "ds_core::accounts", "PoW compute failed: {}", e);
             CoreError::ProofOfWorkFailed(e)
