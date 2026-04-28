@@ -179,7 +179,18 @@ pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
     for item in arr {
         let name = item.get("name")?.as_str()?.to_string();
         let arguments = match item.get("arguments") {
-            Some(v) => serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
+            Some(v) => {
+                if let Some(s) = v.as_str() {
+                    // arguments is a JSON string like "{\"city\": \"Beijing\"}",
+                    // parse into object and re-serialize to prevent double-escaping
+                    serde_json::from_str::<serde_json::Value>(s)
+                        .ok()
+                        .and_then(|obj| serde_json::to_string(&obj).ok())
+                        .unwrap_or_else(|| s.to_string())
+                } else {
+                    serde_json::to_string(v).unwrap_or_else(|_| "{}".into())
+                }
+            }
             None => "{}".into(),
         };
         calls.push(ToolCall {

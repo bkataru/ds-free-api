@@ -138,15 +138,20 @@ impl AccountPool {
         solver: &PowSolver,
     ) -> Result<(), PoolError> {
         use futures::future::join_all;
+        use tokio::sync::Semaphore;
 
-        // Initialize every account concurrently
+
+        // Cap concurrent initialization to avoid overwhelming DeepSeek and local connection pool.
+        let semaphore = std::sync::Arc::new(Semaphore::new(13));
         let futures: Vec<_> = creds
             .into_iter()
             .map(|creds| {
                 let client = client.clone();
                 let solver = solver.clone();
                 let model_types = model_types.clone();
+                let sem = semaphore.clone();
                 async move {
+                    let _permit = sem.acquire().await.expect("semaphore not closed");
                     let display_id = if creds.mobile.is_empty() {
                         creds.email.clone()
                     } else {
