@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::RwLock;
 
 use crate::config::Account as AccountConfig;
 use crate::ds_core::client::{
@@ -15,6 +16,12 @@ use futures::TryStreamExt;
 use log::{debug, info, warn};
 
 /// Basic account identity for status reporting.
+/// Per-session state: session id + next edit_message_id
+struct SessionInfo {
+    id: String,
+    next_message_id: i64,
+}
+
 pub struct AccountStatus {
     pub email: String,
     pub mobile: String,
@@ -24,7 +31,7 @@ pub struct Account {
     token: String,
     email: String,
     mobile: String,
-    sessions: HashMap<String, String>,
+    sessions: RwLock<HashMap<String, SessionInfo>>,
     is_busy: AtomicBool,
 }
 
@@ -33,8 +40,27 @@ impl Account {
         &self.token
     }
 
-    pub fn session_id(&self, model_type: &str) -> Option<&str> {
-        self.sessions.get(model_type).map(|s| s.as_str())
+    pub fn session_id(&self, model_type: &str) -> Option<String> {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(model_type)
+            .map(|s| s.id.clone())
+    }
+
+    pub fn next_message_id(&self, model_type: &str) -> i64 {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(model_type)
+            .map(|s| s.next_message_id)
+            .unwrap_or(1)
+    }
+
+    pub fn set_next_message_id(&self, model_type: &str, id: i64) {
+        if let Some(s) = self.sessions.write().unwrap().get_mut(model_type) {
+            s.next_message_id = id;
+        }
     }
 
     pub fn is_busy(&self) -> bool {
@@ -185,12 +211,15 @@ impl AccountPool {
                 let token = account.token().to_string();
                 account
                     .sessions
+                    .read()
+                    .unwrap()
                     .values()
+                    .map(|s| s.id.clone())
                     .map(move |session_id| {
                         let client = client.clone();
                         let token = token.clone();
                         async move {
-                            if let Err(e) = client.delete_session(&token, session_id).await {
+                            if let Err(e) = client.delete_session(&token, &session_id).await {
                                 warn!(
                                     target: "ds_core::accounts",
                                     "failed to delete session ({}): {}",
@@ -288,14 +317,14 @@ async fn try_init_account(
         };
         client.update_title(&token, &title_payload).await?;
 
-        sessions.insert(model_type.clone(), session_id);
+        sessions.insert(model_type.clone(), SessionInfo { id: session_id, next_message_id: 1 });
     }
 
     Ok(Account {
         token,
         email: creds.email.clone(),
         mobile: creds.mobile.clone(),
-        sessions,
+        sessions: RwLock::new(sessions),
         is_busy: AtomicBool::new(false),
     })
 }
