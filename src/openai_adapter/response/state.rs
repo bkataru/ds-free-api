@@ -136,6 +136,18 @@ impl DsState {
             "response/status" => {
                 if let Some(s) = val.as_str() {
                     self.status = Some(s.to_string());
+                    if s == "FINISHED" {
+                        let has_response = self
+                            .fragments
+                            .iter()
+                            .any(|f| f.ty == "RESPONSE" && !f.content.is_empty());
+                        if !has_response {
+                            log::warn!(
+                                target: "adapter",
+                                "state machine FINISHED with no RESPONSE content"
+                            );
+                        }
+                    }
                     frames.push(DsFrame::Status(s.to_string()));
                 }
             }
