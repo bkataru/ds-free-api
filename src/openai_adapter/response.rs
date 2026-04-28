@@ -179,7 +179,7 @@ where
                         Poll::Ready(Some(Err(e))) => {
                             let e = e.into();
                             if let OpenAIAdapterError::ToolCallRepairNeeded(raw_xml) = e {
-                                warn!(target: "adapter", "RepairStream 捕获修复请求: len={}", raw_xml.len());
+                                warn!(target: "adapter", "RepairStream captured repair request: len={}", raw_xml.len());
                                 trace!(target: "adapter", ">>> repair: accepting raw_xml len={}", raw_xml.len());
                                 let repair_fn = this.repair_fn.clone();
                                 let future = (repair_fn)(raw_xml);
@@ -198,7 +198,7 @@ where
                 RepairState::Repairing { future } => {
                     match future.as_mut().poll(cx) {
                         Poll::Ready(Ok(calls)) => {
-                            info!(target: "adapter", "tool_calls 修复成功: {} 个工具调用", calls.len());
+                            info!(target: "adapter", "tool_calls repair succeeded: {} calls", calls.len());
                             trace!(target: "adapter", ">>> repair: success {} calls", calls.len());
                             // Emit repair result as tool_calls chunk then resume forwarding
                             let chunk = make_repair_chunk(calls);
@@ -206,7 +206,7 @@ where
                             return Poll::Ready(Some(Ok(chunk)));
                         }
                         Poll::Ready(Err(e)) => {
-                            warn!(target: "adapter", "tool_calls 修复失败: {}", e);
+                            warn!(target: "adapter", "tool_calls repair failed: {}", e);
                             *this.state = RepairState::RepairFailed(e.to_string());
                             continue;
                         }

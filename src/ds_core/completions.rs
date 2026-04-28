@@ -130,7 +130,7 @@ impl Completions {
         let guard = self.pool.get_account(&req.model_type).ok_or_else(|| {
             log::warn!(
                 target: "ds_core::accounts",
-                "req={} 账号池无可用账号: model_type={}", request_id, req.model_type
+                "req={} no available account in pool: model_type={}", request_id, req.model_type
             );
             CoreError::Overloaded
         })?;
@@ -146,7 +146,7 @@ impl Completions {
         let edit_message_id = account.next_message_id(&req.model_type);
         log::debug!(
             target: "ds_core::accounts",
-            "req={} 分配账号: model_type={}, token={}..{}", request_id, req.model_type,
+            "req={} account assigned: model_type={}, token={}..{}", request_id, req.model_type,
             &account_id[..4.min(account_id.len())], &account_id[account_id.len().saturating_sub(4)..]
         );
         let pow_header = self.compute_pow(&token).await?;
@@ -188,7 +188,7 @@ impl Completions {
         if is_rate_limit_hint(&second_block) {
             log::warn!(
                 target: "ds_core::accounts",
-                "req={} edit_message 被限流: edit_msg={}", request_id, edit_message_id
+                "req={} edit_message rate-limited: edit_msg={}", request_id, edit_message_id
             );
             return Err(CoreError::Overloaded);
         }
@@ -221,7 +221,7 @@ impl Completions {
     async fn compute_pow(&self, token: &str) -> Result<String, CoreError> {
         let challenge_data = self.client.create_pow_challenge(token).await?;
         let result = self.solver.solve(&challenge_data).map_err(|e| {
-            log::error!(target: "ds_core::accounts", "PoW 计算失败: {}", e);
+            log::error!(target: "ds_core::accounts", "PoW compute failed: {}", e);
             CoreError::ProofOfWorkFailed(e)
         })?;
         Ok(result.to_header())
