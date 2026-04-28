@@ -9,13 +9,13 @@ mod sse_parser;
 mod state;
 mod tool_parser;
 
-pub(crate) use tool_parser::TOOL_CALL_END;
-pub(crate) use tool_parser::TOOL_CALL_START;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
+pub(crate) use tool_parser::TOOL_CALL_END;
+pub(crate) use tool_parser::TOOL_CALL_START;
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -25,7 +25,9 @@ use rand::RngExt;
 
 use crate::openai_adapter::{
     OpenAIAdapterError, StreamResponse,
-    types::{ChatCompletion, ChatCompletionChunk, ChunkChoice, Choice, Delta, MessageResponse, ToolCall},
+    types::{
+        ChatCompletion, ChatCompletionChunk, Choice, ChunkChoice, Delta, MessageResponse, ToolCall,
+    },
 };
 
 static CHATCMPL_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -84,7 +86,8 @@ fn find_stop_pos(content: &str, stop: &[String]) -> Option<usize> {
 
 /// RepairStream inner stream type
 #[allow(dead_code)]
-type ChunkStream = Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>>;
+type ChunkStream =
+    Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>>;
 
 /// Async closure type: takes raw XML text, returns repaired tool_calls via a fresh ds_core call.
 pub type RepairFn = Arc<
@@ -115,6 +118,10 @@ pub(crate) async fn execute_tool_repair(
                 ));
             }
         }
+    }
+
+    if let Some(calls) = tool_parser::parse_json_tool_calls_text(&text) {
+        return Ok(calls);
     }
 
     let wrapped = if text.contains(TOOL_CALL_START) {
@@ -175,28 +182,26 @@ where
 
         loop {
             match this.state {
-                RepairState::Forwarding => {
-                    match this.inner.as_mut().poll_next(cx) {
-                        Poll::Ready(Some(Ok(chunk))) => return Poll::Ready(Some(Ok(chunk))),
-                        Poll::Ready(Some(Err(e))) => {
-                            let e = e.into();
-                            if let OpenAIAdapterError::ToolCallRepairNeeded(raw_xml) = e {
-                                warn!(target: "adapter", "RepairStream captured repair request: len={}", raw_xml.len());
-                                trace!(target: "adapter", ">>> repair: accepting raw_xml len={}", raw_xml.len());
-                                let repair_fn = this.repair_fn.clone();
-                                let future = (repair_fn)(raw_xml);
-                                *this.state = RepairState::Repairing { future };
-                                continue;
-                            }
-                            return Poll::Ready(Some(Err(e)));
+                RepairState::Forwarding => match this.inner.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(Ok(chunk))) => return Poll::Ready(Some(Ok(chunk))),
+                    Poll::Ready(Some(Err(e))) => {
+                        let e = e.into();
+                        if let OpenAIAdapterError::ToolCallRepairNeeded(raw_xml) = e {
+                            warn!(target: "adapter", "RepairStream captured repair request: len={}", raw_xml.len());
+                            trace!(target: "adapter", ">>> repair: accepting raw_xml len={}", raw_xml.len());
+                            let repair_fn = this.repair_fn.clone();
+                            let future = (repair_fn)(raw_xml);
+                            *this.state = RepairState::Repairing { future };
+                            continue;
                         }
-                        Poll::Ready(None) => {
-                            *this.state = RepairState::Done;
-                            return Poll::Ready(None);
-                        }
-                        Poll::Pending => return Poll::Pending,
+                        return Poll::Ready(Some(Err(e)));
                     }
-                }
+                    Poll::Ready(None) => {
+                        *this.state = RepairState::Done;
+                        return Poll::Ready(None);
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
                 RepairState::Repairing { future } => {
                     match future.as_mut().poll(cx) {
                         Poll::Ready(Ok(calls)) => {
@@ -229,12 +234,16 @@ static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Build a synthetic tool_calls chunk from repaired call list.
 fn make_repair_chunk(calls: Vec<ToolCall>) -> ChatCompletionChunk {
-    let model = calls.first()
+    let model = calls
+        .first()
         .and_then(|c| c.function.as_ref())
         .map(|_| "".to_string())
         .unwrap_or_default();
     ChatCompletionChunk {
-        id: format!("chatcmpl-repair-{}", CALL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        id: format!(
+            "chatcmpl-repair-{}",
+            CALL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ),
         object: "chat.completion.chunk",
         created: 0,
         model,
@@ -358,17 +367,18 @@ where
         include_usage,
         include_obfuscation,
         prompt_tokens,
-       tools_present,
+        tools_present,
     );
     let tool_parsed = tool_parser::ToolCallStream::new(converted, model);
 
     // Wrap with RepairStream if repair function is provided
-    let inner_stream: Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>> =
-        if let Some(rf) = repair_fn {
-            Box::pin(RepairStream::new(tool_parsed, rf))
-        } else {
-            Box::pin(tool_parsed)
-        };
+    let inner_stream: Pin<
+        Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>,
+    > = if let Some(rf) = repair_fn {
+        Box::pin(RepairStream::new(tool_parsed, rf))
+    } else {
+        Box::pin(tool_parsed)
+    };
 
     let stop_stream = StopStream {
         inner: inner_stream,
@@ -395,8 +405,14 @@ where
     debug!(target: "adapter", "building buffered response: model={}, stop_count={}", model, stop.len());
     let sse = sse_parser::SseStream::new(ds_stream);
     let state_stream = state::StateStream::new(sse);
-    let converted =
-       converter::ConverterStream::new(state_stream, model.clone(), true, false, prompt_tokens, tools_present);
+    let converted = converter::ConverterStream::new(
+        state_stream,
+        model.clone(),
+        true,
+        false,
+        prompt_tokens,
+        tools_present,
+    );
 
     let mut content = String::new();
     let mut reasoning = String::new();
@@ -801,7 +817,10 @@ mod tests {
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
             .collect();
-        assert!(all_reasoning.contains("Thinking..."), "expected THINK fragment `Thinking...`");
+        assert!(
+            all_reasoning.contains("Thinking..."),
+            "expected THINK fragment `Thinking...`"
+        );
         // At least one surfaced chunk should emit `tool_calls`.
         let has_tool_calls = chunks
             .iter()
@@ -860,8 +879,14 @@ mod tests {
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
             .collect();
-        assert!(all_reasoning.contains("Thinking"), "expected substring `Thinking`");
-        assert!(all_reasoning.contains("Continuing"), "expected substring `Continuing`");
+        assert!(
+            all_reasoning.contains("Thinking"),
+            "expected substring `Thinking`"
+        );
+        assert!(
+            all_reasoning.contains("Continuing"),
+            "expected substring `Continuing`"
+        );
         // Assistant text should concatenate to "hello".
         let all_content: String = chunks
             .iter()
@@ -969,7 +994,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_leading_text_fragmented() {
-            // Scenario: leading natural language + chunked `<tool_call>` JSON
+        // Scenario: leading natural language + chunked `<tool_call>` JSON
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, I will help you generate the image.\"}\n\n\
@@ -1079,7 +1104,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_thinking_then_leading_text_then_fragmented_json() {
-            // Full production mix: THINK → leading content → fragmented `<tool_call>`
+        // Full production mix: THINK → leading content → fragmented `<tool_call>`
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"User wants weather info, I need to call the tool\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
@@ -1128,10 +1153,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_json_split_right_after_tag() {
-            // `<tool_call>` opens early while JSON arguments finish in later deltas
+        // `<tool_call>` opens early while JSON arguments finish in later deltas
         // chunk 1: leading text
         // chunk 2: <tool_call>[{"name": "f", "arguments": {}}]
-            // Third chunk may only carry the closing `</tool_call>` sentinel
+        // Third chunk may only carry the closing `</tool_call>` sentinel
         // chunk 4: FINISHED
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
@@ -1167,7 +1192,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_no_leading_text() {
-            // Common degenerate case — model jumps straight into `<tool_call>`
+        // Common degenerate case — model jumps straight into `<tool_call>`
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_call>\"}\n\n\
@@ -1224,6 +1249,47 @@ mod tests {
             last["choices"][0]["finish_reason"], "tool_calls",
             "finish_reason should be tool_calls, got {:?}",
             last["choices"][0]["finish_reason"]
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_omp_xml_tool_calls_from_reasoning_only_finish() {
+        // Mirrors OMP sessions where DeepSeek emits its tool request in THINK and finishes
+        // without a RESPONSE fragment. With tools present, converter flushes THINK as content
+        // so the parser can promote OMP XML into structured OpenAI tool_calls.
+        let fixture = "event: ready\ndata: {}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"Let me run this.<tool_calls><invoke name=\\\"bash\\\"><parameter name=\\\"command\\\" string=\\\"true\\\">git tag v0.2.2 &amp;&amp; git push bkataru v0.2.2</parameter><parameter name=\\\"cwd\\\" string=\\\"true\\\">/home/int-wizard/ds-free-api</parameter></invoke></tool_calls>\"}]}}}\n\n\
+            data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
+            event: finish\ndata: {}\n\n";
+        let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
+        let chunks = collect_chunks(super::stream(
+            bytes_stream,
+            "deepseek-expert".into(),
+            false,
+            false,
+            vec![],
+            0,
+            true,
+            None,
+        ))
+        .await;
+
+        let tc_chunk = chunks
+            .iter()
+            .find(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some())
+            .expect("should emit structured tool_calls from OMP XML");
+        let calls = tc_chunk["choices"][0]["delta"]["tool_calls"]
+            .as_array()
+            .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"]["name"], "bash");
+        assert_eq!(
+            calls[0]["function"]["arguments"],
+            r#"{"command":"git tag v0.2.2 && git push bkataru v0.2.2","cwd":"/home/int-wizard/ds-free-api"}"#
+        );
+        assert_eq!(
+            tc_chunk["choices"][0]["finish_reason"], "tool_calls",
+            "OMP XML must finish as tool_calls so the agent loop continues"
         );
     }
 }

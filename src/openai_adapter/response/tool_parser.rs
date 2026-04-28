@@ -25,8 +25,12 @@ pub(crate) const MAX_XML_BUF_LEN: usize = 64 * 1024;
 pub(crate) const TOOL_CALL_START: &str = "<tool_call>";
 /// Sentinel `</tool_call>` terminator
 pub(crate) const TOOL_CALL_END: &str = "</tool_call>";
+/// OMP/GPT-style XML tool-call wrapper opener
+const OMP_TOOL_CALLS_START: &str = "<tool_calls>";
+/// OMP/GPT-style XML tool-call wrapper terminator
+const OMP_TOOL_CALLS_END: &str = "</tool_calls>";
 /// Byte-length of sentinel
-const TAG_LEN: usize = TOOL_CALL_START.len();
+const TAG_LEN: usize = OMP_TOOL_CALLS_START.len();
 /// Window width equals marker length plus slack budget so partial UTF-8 never drops tags.
 const W: usize = TAG_LEN + 7; // 19
 
@@ -47,11 +51,125 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
     i
 }
 
-
 /// Detect whether `<tool_call>` happens inside stray triple-backtick fenced samples.
 fn is_inside_code_fence(xml: &str, tag_pos: usize) -> bool {
     let before = &xml[..tag_pos];
     before.matches("```").count() % 2 == 1
+}
+
+fn find_tool_start(s: &str) -> Option<(usize, &'static str)> {
+    [TOOL_CALL_START, OMP_TOOL_CALLS_START]
+        .into_iter()
+        .filter_map(|tag| s.find(tag).map(|pos| (pos, tag)))
+        .min_by_key(|(pos, _)| *pos)
+}
+
+fn find_tool_end(s: &str) -> Option<(usize, &'static str)> {
+    [TOOL_CALL_END, OMP_TOOL_CALLS_END]
+        .into_iter()
+        .filter_map(|tag| s.find(tag).map(|pos| (pos, tag)))
+        .min_by_key(|(pos, _)| *pos)
+}
+
+fn decode_xml_entities(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn find_xml_attr(tag: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=");
+    let idx = tag.find(&needle)? + needle.len();
+    let quote = tag[idx..].chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let rest = &tag[idx + quote.len_utf8()..];
+    let end = rest.find(quote)?;
+    Some(decode_xml_entities(&rest[..end]))
+}
+
+fn parameter_value_to_json(tag: &str, raw: &str) -> serde_json::Value {
+    let text = decode_xml_entities(raw).trim().to_string();
+    if find_xml_attr(tag, "string").as_deref() == Some("true") {
+        return serde_json::Value::String(text);
+    }
+    serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text))
+}
+
+fn parse_omp_xml_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
+    let start = xml.find(OMP_TOOL_CALLS_START)?;
+    if is_inside_code_fence(xml, start) {
+        return None;
+    }
+    let after_start = start + OMP_TOOL_CALLS_START.len();
+    let inner_end = xml[after_start..].find(OMP_TOOL_CALLS_END)? + after_start;
+    let end = inner_end + OMP_TOOL_CALLS_END.len();
+    let inner = &xml[after_start..inner_end];
+
+    let mut calls = Vec::new();
+    let mut offset = 0;
+    while let Some(rel_start) = inner[offset..].find("<invoke") {
+        let invoke_start = offset + rel_start;
+        let tag_end = inner[invoke_start..].find('>')? + invoke_start;
+        let tag = &inner[invoke_start..=tag_end];
+        let name = find_xml_attr(tag, "name")?;
+        let content_start = tag_end + 1;
+        let close_rel = inner[content_start..].find("</invoke>")?;
+        let content_end = content_start + close_rel;
+        let content = &inner[content_start..content_end];
+        offset = content_end + "</invoke>".len();
+
+        let mut args = serde_json::Map::new();
+        let mut param_offset = 0;
+        while let Some(param_rel) = content[param_offset..].find("<parameter") {
+            let param_start = param_offset + param_rel;
+            let param_tag_end = content[param_start..].find('>')? + param_start;
+            let param_tag = &content[param_start..=param_tag_end];
+            let param_name = find_xml_attr(param_tag, "name")?;
+
+            let (value, next_offset) = if param_tag.trim_end_matches('>').trim_end().ends_with('/')
+            {
+                (
+                    find_xml_attr(param_tag, "value")
+                        .or_else(|| find_xml_attr(param_tag, "string"))
+                        .unwrap_or_default(),
+                    param_tag_end + 1,
+                )
+            } else {
+                let value_start = param_tag_end + 1;
+                let close = "</parameter>";
+                let value_end = content[value_start..].find(close)? + value_start;
+                (
+                    content[value_start..value_end].to_string(),
+                    value_end + close.len(),
+                )
+            };
+
+            args.insert(param_name, parameter_value_to_json(param_tag, &value));
+            param_offset = next_offset;
+        }
+
+        calls.push(ToolCall {
+            id: next_call_id(),
+            ty: "function".to_string(),
+            function: Some(FunctionCall {
+                name,
+                arguments: serde_json::to_string(&args).unwrap_or_else(|_| "{}".into()),
+            }),
+            custom: None,
+            index: calls.len() as u32,
+        });
+    }
+
+    if calls.is_empty() {
+        return None;
+    }
+
+    let remaining = xml[..start].to_string() + &xml[end..];
+    Some((calls, remaining))
 }
 
 /// Repair malformed JSON escapes for permissive parses.
@@ -61,7 +179,9 @@ fn repair_invalid_backslashes(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.peek() {
-                Some(&next) if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') => {
+                Some(&next)
+                    if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') =>
+                {
                     out.push('\\');
                     out.push(next);
                     chars.next();
@@ -131,50 +251,55 @@ fn repair_json(s: &str) -> Option<String> {
     None
 }
 
-/// Parse bracketed arrays inside `<tool_call>` wrappers into canonical `Vec<ToolCall>`.
-///
-/// Example payload:
-/// `<tool_call>[{"name":"get_weather","arguments":{"city":"Beijing"}}]</tool_call>`
-pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
-    let start = xml.find(TOOL_CALL_START)?;
-    // Markdown examples sometimes embed sentinel text — skip those.
-    if is_inside_code_fence(xml, start) {
-        return None;
+fn balanced_json_end(s: &str) -> Option<usize> {
+    let mut stack = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in s.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '[' => stack.push(']'),
+            '{' => stack.push('}'),
+            ']' | '}' => {
+                if stack.pop() != Some(ch) {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(idx + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
     }
-    let after_start = start + TOOL_CALL_START.len();
 
-    // Closing tag keeps hallucinated completions from leaking onward.
-    let (end, inner_end) = match xml.find(TOOL_CALL_END) {
-        Some(pos) => (pos + TOOL_CALL_END.len(), pos),
-        None => (xml.len(), xml.len()),
-    };
-    let inner = &xml[after_start..inner_end];
+    None
+}
 
-    // Handle both array and single-object cases.
-    let arr: Vec<serde_json::Value> = match inner.find('[') {
-        Some(arr_start) => {
-            let arr_end = inner.rfind(']')? + 1;
-            let json_str = &inner[arr_start..arr_end];
-            let arr: Option<Vec<serde_json::Value>> = serde_json::from_str(json_str).ok();
-            arr.or_else(|| {
-                let repaired = repair_json(json_str)?;
-                serde_json::from_str(&repaired).ok()
-            })?
+fn find_json_payload(s: &str) -> Option<&str> {
+    for (start, ch) in s.char_indices() {
+        if ch != '[' && ch != '{' {
+            continue;
         }
-        None => {
-            let obj_start = inner.find('{')?;
-            let obj_end = inner.rfind('}')? + 1;
-            let json_str = &inner[obj_start..obj_end];
-            let obj: Option<serde_json::Value> = serde_json::from_str(json_str)
-                .ok()
-                .filter(|v: &serde_json::Value| v.is_object());
-            let obj = obj.or_else(|| {
-                let repaired = repair_json(json_str)?;
-                serde_json::from_str(&repaired).ok()
-            })?;
-            vec![obj]
+        if let Some(end) = balanced_json_end(&s[start..]) {
+            return Some(&s[start..start + end]);
         }
-    };
+    }
+    None
+}
+
+fn parse_json_tool_call_items(arr: Vec<serde_json::Value>) -> Option<Vec<ToolCall>> {
     let mut calls = Vec::new();
     for item in arr {
         let name = item.get("name")?.as_str()?.to_string();
@@ -205,6 +330,48 @@ pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
     if calls.is_empty() {
         return None;
     }
+
+    Some(calls)
+}
+
+pub(crate) fn parse_json_tool_calls_text(text: &str) -> Option<Vec<ToolCall>> {
+    let json_str = find_json_payload(text)?;
+    let value = serde_json::from_str::<serde_json::Value>(json_str)
+        .ok()
+        .or_else(|| {
+            let repaired = repair_json(json_str)?;
+            serde_json::from_str(&repaired).ok()
+        })?;
+    let arr = match value {
+        serde_json::Value::Array(arr) => arr,
+        serde_json::Value::Object(_) => vec![value],
+        _ => return None,
+    };
+    parse_json_tool_call_items(arr)
+}
+
+/// Parse bracketed arrays inside `<tool_call>` wrappers into canonical `Vec<ToolCall>`.
+///
+/// Example payload:
+/// `<tool_call>[{"name":"get_weather","arguments":{"city":"Beijing"}}]</tool_call>`
+pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
+    let (start, start_tag) = find_tool_start(xml)?;
+    if start_tag == OMP_TOOL_CALLS_START {
+        return parse_omp_xml_tool_calls(xml);
+    }
+    // Markdown examples sometimes embed sentinel text — skip those.
+    if is_inside_code_fence(xml, start) {
+        return None;
+    }
+    let after_start = start + TOOL_CALL_START.len();
+
+    // Closing tag keeps hallucinated completions from leaking onward.
+    let (end, inner_end) = match xml.find(TOOL_CALL_END) {
+        Some(pos) => (pos + TOOL_CALL_END.len(), pos),
+        None => (xml.len(), xml.len()),
+    };
+    let inner = &xml[after_start..inner_end];
+    let calls = parse_json_tool_calls_text(inner)?;
 
     let remaining = xml[..start].to_string() + &xml[end..];
     Some((calls, remaining))
@@ -306,18 +473,19 @@ where
                                 buffer.push_str(&content);
 
                                 // Detect `<tool_call>` substring inside slack buffer.
-                                if let Some(pos) = buffer.find(TOOL_CALL_START) {
+                                if let Some((pos, start_tag)) = find_tool_start(buffer) {
                                     debug!(
                                         target: "adapter",
-                                        "tool_parser: <tool_call> detected (buffer_len={})",
+                                        "tool_parser: {} detected (buffer_len={})",
+                                        start_tag,
                                         buffer.len()
                                     );
                                     let before = buffer[..pos].to_string();
                                     let rest = std::mem::take(buffer)[pos..].to_string();
 
                                     // Determine whether `</tool_call>` completes within this chunk.
-                                    if let Some(end_pos) = rest.find(TOOL_CALL_END) {
-                                        let end_abs = end_pos + TOOL_CALL_END.len();
+                                    if let Some((end_pos, end_tag)) = find_tool_end(&rest) {
+                                        let end_abs = end_pos + end_tag.len();
                                         let collected = &rest[..end_abs];
 
                                         if let Some((calls, _)) = parse_tool_calls(collected) {
@@ -343,7 +511,11 @@ where
                                             );
                                             let collected = collected.to_string();
                                             if before.is_empty() {
-                                                return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(collected))));
+                                                return Poll::Ready(Some(Err(
+                                                    OpenAIAdapterError::ToolCallRepairNeeded(
+                                                        collected,
+                                                    ),
+                                                )));
                                             }
                                             choice.delta.content = Some(before);
                                             *this.repair_pending = Some(collected);
@@ -388,8 +560,8 @@ where
                                     choice.delta.content = Some(flushed);
                                     return Poll::Ready(Some(Ok(chunk)));
                                 }
-                                if let Some(end_pos) = buf.find(TOOL_CALL_END) {
-                                    let end_abs = end_pos + TOOL_CALL_END.len();
+                                if let Some((end_pos, end_tag)) = find_tool_end(buf) {
+                                    let end_abs = end_pos + end_tag.len();
                                     let collected = buf[..end_abs].to_string();
                                     let _tail = buf.split_off(end_abs);
 
@@ -411,7 +583,9 @@ where
                                             target: "adapter",
                                             "tool_parser: parse failed — streaming verbatim assistant chars"
                                         );
-                                        return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(collected))));
+                                        return Poll::Ready(Some(Err(
+                                            OpenAIAdapterError::ToolCallRepairNeeded(collected),
+                                        )));
                                     }
                                     return Poll::Ready(Some(Ok(chunk)));
                                 }
@@ -465,7 +639,9 @@ where
                                             "tool_parser: terminal flush unable to coerce tool JSON — flushing buffered text fallback"
                                         );
                                         *this.state = ToolParseState::Done;
-                                        return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(flushed))));
+                                        return Poll::Ready(Some(Err(
+                                            OpenAIAdapterError::ToolCallRepairNeeded(flushed),
+                                        )));
                                     }
                                     *this.state = ToolParseState::Done;
                                     return Poll::Ready(Some(Ok(chunk)));
@@ -527,7 +703,9 @@ where
                                     target: "adapter",
                                     "tool_parser: terminal flush unable to coerce tool JSON — flushing buffered text fallback"
                                 );
-                                return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(buf))));
+                                return Poll::Ready(Some(Err(
+                                    OpenAIAdapterError::ToolCallRepairNeeded(buf),
+                                )));
                             }
                         }
                         ToolParseState::Done => return Poll::Ready(None),
@@ -593,7 +771,8 @@ The following is a tool call:
 
     #[test]
     fn parse_tool_calls_single_object() {
-        let xml = r#"<tool_call>{"name": "get_weather", "arguments": {"city": "New York"}}</tool_call>"#;
+        let xml =
+            r#"<tool_call>{"name": "get_weather", "arguments": {"city": "New York"}}</tool_call>"#;
         let (calls, _) = parse_tool_calls(xml).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.as_ref().unwrap().name, "get_weather");
@@ -605,5 +784,87 @@ The following is a tool call:
         let (calls, remaining) = parse_tool_calls(xml).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn parse_omp_xml_tool_calls() {
+        let xml = r#"<tool_calls>
+<invoke name="bash">
+<parameter name="command" string="true">git tag v0.2.2 &amp;&amp; git push bkataru v0.2.2</parameter>
+<parameter name="cwd" string="true">/home/int-wizard/ds-free-api</parameter>
+</invoke>
+</tool_calls>"#;
+        let (calls, remaining) = parse_tool_calls(xml).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(calls.len(), 1);
+        let function = calls[0].function.as_ref().unwrap();
+        assert_eq!(function.name, "bash");
+        assert_eq!(
+            function.arguments,
+            r#"{"command":"git tag v0.2.2 && git push bkataru v0.2.2","cwd":"/home/int-wizard/ds-free-api"}"#
+        );
+    }
+
+    #[test]
+    fn parse_omp_xml_multiple_invokes_with_trailing_text() {
+        let xml = r#"prefix <tool_calls><invoke name="read"><parameter name="path" string="true">/tmp/a</parameter></invoke><invoke name="bash"><parameter name="command" string="true">date</parameter></invoke></tool_calls> suffix"#;
+        let (calls, remaining) = parse_tool_calls(xml).unwrap();
+        assert_eq!(remaining, "prefix  suffix");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "read");
+        assert_eq!(calls[1].function.as_ref().unwrap().name, "bash");
+        assert_eq!(calls[0].index, 0);
+        assert_eq!(calls[1].index, 1);
+    }
+
+    #[test]
+    fn parse_repair_json_with_literal_omp_markers_in_argument() {
+        let text = r###"[
+  {
+    "name": "edit",
+    "arguments": {
+      "path": "/home/int-wizard/ds-free-api/CHANGELOG.md",
+      "edits": [
+        {
+          "loc": "7jn",
+          "pre": [
+            "",
+            "## [0.2.3] - 2026-04-28",
+            "- Recognizes OMP-style `<tool_calls><invoke name=\"bash\"></invoke></tool_calls>` text."
+          ]
+        }
+      ]
+    }
+  }
+]"###;
+
+        let calls = parse_json_tool_calls_text(text).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "edit");
+        assert!(
+            calls[0]
+                .function
+                .as_ref()
+                .unwrap()
+                .arguments
+                .contains("<tool_calls>")
+        );
+    }
+
+    #[test]
+    fn parse_tool_call_json_takes_precedence_over_literal_omp_markers() {
+        let xml = r#"<tool_call>[
+  {
+    "name": "edit",
+    "arguments": {
+      "body": "Document literal <tool_calls><invoke name=\"bash\"></invoke></tool_calls> markers"
+    }
+  }
+]</tool_call>"#;
+
+        let (calls, remaining) = parse_tool_calls(xml).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "edit");
     }
 }

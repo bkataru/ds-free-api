@@ -4,13 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.4-fork] - 2026-05-01
+## [0.2.3] - 2026-04-28
 
 ### Added
 - `tools_present` compatibility: accept and normalize client tool-presence signaling so adapters stay aligned with OpenAI-shaped clients that set the flag explicitly.
 - Reasoning-merge in `openai_adapter` response conversion: merge interim reasoning deltas with assistant content so streaming and aggregated outputs stay coherent across tool and text phases.
 - `pending_reasoning_flush` handling: flush deferred reasoning fragments at stream boundaries so reasoning does not leak across chunks or get dropped between states.
 - Converter trace instrumentation: structured trace points in the OpenAI SSE converter path to debug frame ordering, reasoning vs. content splits, and tool-call interleaving.
+
+
+### Fixed
+- OMP XML tool-call parsing: recognize `<tool_calls><invoke ...>` output and convert it into OpenAI-compatible structured `tool_calls` instead of assistant text.
+- Tool-call repair resilience: parse repaired JSON directly before XML fallback so docs or tool arguments containing literal `<tool_calls>` markers do not break repair.
+- Reasoning-only tool calls: preserve tool calls emitted from DeepSeek thinking output when the upstream state machine finishes without a separate response body.
 
 ## [0.2.2] - 2026-04-22
 

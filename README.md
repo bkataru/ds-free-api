@@ -53,6 +53,7 @@ Thank you, NIyueeE, for open-sourcing the groundwork.
 Extensions and modifications specific to this fork:
 
 - **`tools_present` compatibility** — Aligns streamed tool deltas with consumers that infer presence from SSE chunks (OMP, Claude Code, opencode).
+- **OMP XML tool-call parsing** — Converts OMP/GPT-style `<tool_calls><invoke ...>` output into OpenAI `tool_calls`, including reasoning-only `deepseek-expert` turns that finish without response text.
 - **Reasoning merge** — Concatenates thought traces and assistant content without breaking clients that gate on canonical message ordering.
 - **Anthropic compat layer** — First-class `/anthropic/v1/messages` mapping so Claude-shaped SDKs work without a second proxy.
 - **Keepalive stream** — Injects SSE keepalive comments on 1700 ms idle to prevent connection timeouts.
@@ -150,7 +151,7 @@ The Anthropic compatibility layer reuses the same IDs; call them through `/anthr
 
 - **Reasoning traces** — On by default. Send `"reasoning_effort": "none"` to force plain answers.
 - **Web search** — Off by default. Opt in with `"web_search_options": {"search_context_size": "high"}`.
-- **Tool calls** — Standard OpenAI `tools` / `tool_choice`. When the model selects a tool, `finish_reason` becomes `tool_calls`.
+- **Tool calls** — Standard OpenAI `tools` / `tool_choice`; also accepts OMP/GPT-style XML tool invocations and normalizes them to structured OpenAI `tool_calls`. When the model selects a tool, `finish_reason` becomes `tool_calls`.
 
 ## Architecture
 
@@ -220,7 +221,7 @@ flowchart TB
 Data paths:
 
 - **OpenAI request** — JSON body, normalize (validation + defaults), tools extraction, prompt ChatML assembly, resolver model mapping, ChatRequest.
-- **OpenAI response** — DeepSeek SSE bytes, sse_parser, state patch machine, converter format pass, tool_parser XML extraction, StopStream truncation, OpenAI SSE bytes.
+- **OpenAI response** — DeepSeek SSE bytes, sse_parser, state patch machine, converter format pass, XML/JSON tool-call extraction, StopStream truncation, OpenAI SSE bytes.
 - **Anthropic request** — Anthropic JSON, `to_openai_request()`, joins the OpenAI request path.
 - **Anthropic response** — OpenAI output, `from_chat_completion_stream()` / `from_chat_completion_bytes()`, Anthropic SSE/JSON.
 
