@@ -7,6 +7,7 @@
 use bytes::Bytes;
 use futures::Stream;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::ds_core::{CoreError, DeepSeekCore};
 
@@ -20,7 +21,7 @@ pub type StreamResponse = Pin<Box<dyn Stream<Item = Result<Bytes, OpenAIAdapterE
 
 /// OpenAI-compatible adapter over `DeepSeekCore`.
 pub struct OpenAIAdapter {
-    ds_core: DeepSeekCore,
+    ds_core: Arc<DeepSeekCore>,
     model_types: Vec<String>,
     model_registry: std::collections::HashMap<String, String>,
     max_input_tokens: Vec<u32>,
@@ -30,7 +31,7 @@ pub struct OpenAIAdapter {
 impl OpenAIAdapter {
     /// Build a new adapter instance.
     pub async fn new(config: &crate::config::Config) -> Result<Self, OpenAIAdapterError> {
-        let ds_core = DeepSeekCore::new(config).await?;
+        let ds_core = Arc::new(DeepSeekCore::new(config).await?);
         let model_registry = config.deepseek.model_registry();
         Ok(Self {
             ds_core,
@@ -65,6 +66,7 @@ impl OpenAIAdapter {
     ) -> Result<StreamResponse, OpenAIAdapterError> {
         let req = request::parse(body, &self.model_registry)?;
         let stream = self.try_chat(req.ds_req).await?;
+        let repair_fn = self.create_repair_fn();
         Ok(response::stream(
             stream,
             req.model,
@@ -73,6 +75,7 @@ impl OpenAIAdapter {
             req.stop,
             req.prompt_tokens,
             req.tools_present,
+            Some(repair_fn),
         ))
     }
 
@@ -124,6 +127,35 @@ impl OpenAIAdapter {
     pub async fn shutdown(&self) {
         self.ds_core.shutdown().await;
     }
+
+    /// Builds the repair closure for tool_calls self-repair.
+    /// The closure captures Arc<DeepSeekCore> and calls a repair model to fix
+    /// malformed XML tool calls from the primary model.
+    pub(crate) fn create_repair_fn(&self) -> response::RepairFn {
+        use std::sync::Arc;
+        let core = self.ds_core.clone();
+        Arc::new(move |raw_xml: String| {
+            let core = core.clone();
+            Box::pin(async move {
+                use crate::ds_core::ChatRequest;
+                let prompt = format!(
+                    "system: repair tool_calls\n\
+                     Fix the following content into a valid JSON array of tool calls. \
+                     Each element must have \"name\" (string) and \"arguments\" (object). \
+                     Output ONLY the JSON array, no markdown, no explanation.\n\n\
+                     Content to fix:\n{raw_xml}"
+                );
+                let req = ChatRequest {
+                    prompt,
+                    thinking_enabled: false,
+                    search_enabled: false,
+                    model_type: "default".to_string(),
+                };
+                let stream = core.v0_chat(req).await.map_err(OpenAIAdapterError::from)?;
+                response::execute_tool_repair(stream).await
+            })
+        })
+    }
 }
 
 /// Adapter-visible error taxonomy.
@@ -144,6 +176,10 @@ pub enum OpenAIAdapterError {
     /// Internal invariant or adapter bug (serialization, stream bridging, …).
     #[error("internal error: {0}")]
     Internal(String),
+
+    /// Malformed tool_calls XML — upstream RepairStream will attempt repair.
+    #[error("tool_calls repair needed: {0}")]
+    ToolCallRepairNeeded(String),
 }
 
 impl From<CoreError> for OpenAIAdapterError {
@@ -173,6 +209,7 @@ impl OpenAIAdapterError {
             Self::Overloaded => 429,
             Self::ProviderError(_) => 502,
             Self::Internal(_) => 500,
+            Self::ToolCallRepairNeeded(_) => 500,
         }
     }
 }

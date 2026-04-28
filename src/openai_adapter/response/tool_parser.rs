@@ -19,7 +19,7 @@ use crate::openai_adapter::types::{
 };
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-const MAX_XML_BUF_LEN: usize = 64 * 1024;
+pub(crate) const MAX_XML_BUF_LEN: usize = 64 * 1024;
 
 /// Sentinel `<tool_calls>` opener
 const TAG_START: &str = "<tool_calls>";
@@ -150,16 +150,31 @@ pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
     };
     let inner = &xml[after_start..inner_end];
 
-    // Slice loosely between brackets to accommodate commentary inserted by sloppy models.
-    let arr_start = inner.find('[')?;
-    let arr_end = inner.rfind(']')? + 1;
-    let json_str = &inner[arr_start..arr_end];
-
-    // Try sanitizer helpers before serde_json.
-    let json_parsed: Result<Vec<serde_json::Value>, _> = repair_json(json_str)
-        .map(|s| serde_json::from_str(&s))
-        .unwrap_or_else(|| serde_json::from_str(json_str));
-    let arr: Vec<serde_json::Value> = json_parsed.ok()?;
+    // Handle both array and single-object cases.
+    let arr: Vec<serde_json::Value> = match inner.find('[') {
+        Some(arr_start) => {
+            let arr_end = inner.rfind(']')? + 1;
+            let json_str = &inner[arr_start..arr_end];
+            let arr: Option<Vec<serde_json::Value>> = serde_json::from_str(json_str).ok();
+            arr.or_else(|| {
+                let repaired = repair_json(json_str)?;
+                serde_json::from_str(&repaired).ok()
+            })?
+        }
+        None => {
+            let obj_start = inner.find('{')?;
+            let obj_end = inner.rfind('}')? + 1;
+            let json_str = &inner[obj_start..obj_end];
+            let obj: Option<serde_json::Value> = serde_json::from_str(json_str)
+                .ok()
+                .filter(|v: &serde_json::Value| v.is_object());
+            let obj = obj.or_else(|| {
+                let repaired = repair_json(json_str)?;
+                serde_json::from_str(&repaired).ok()
+            })?;
+            vec![obj]
+        }
+    };
     let mut calls = Vec::new();
     for item in arr {
         let name = item.get("name")?.as_str()?.to_string();
@@ -227,6 +242,8 @@ pin_project! {
         state: ToolParseState,
         model: String,
         finish_emitted: bool,
+        // Pending repair: raw XML text to emit as ToolCallRepairNeeded error on next poll
+        repair_pending: Option<String>,
     }
 }
 
@@ -240,6 +257,7 @@ impl<S> ToolCallStream<S> {
             },
             model,
             finish_emitted: false,
+            repair_pending: None,
         }
     }
 }
@@ -252,6 +270,12 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
+
+        // Emit pending repair error before processing next item.
+        if let Some(raw_xml) = this.repair_pending.take() {
+            debug!(target: "adapter", "tool_parser emitting repair request");
+            return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(raw_xml))));
+        }
 
         loop {
             match this.inner.as_mut().poll_next(cx) {
@@ -307,10 +331,13 @@ where
                                                 target: "adapter",
                                                 "tool_parser: parse failed — streaming verbatim assistant chars"
                                             );
-                                            choice.delta.content = Some(format!("{before}{rest}"));
-                                            *this.state = ToolParseState::Detecting {
-                                                buffer: String::new(),
-                                            };
+                                            let collected = collected.to_string();
+                                            if before.is_empty() {
+                                                return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(collected))));
+                                            }
+                                            choice.delta.content = Some(before);
+                                            *this.repair_pending = Some(collected);
+                                            return Poll::Ready(Some(Ok(chunk)));
                                         }
                                         return Poll::Ready(Some(Ok(chunk)));
                                     }
@@ -354,7 +381,7 @@ where
                                 if let Some(end_pos) = buf.find(TAG_END) {
                                     let end_abs = end_pos + TAG_END.len();
                                     let collected = buf[..end_abs].to_string();
-                                    let tail = buf.split_off(end_abs);
+                                    let _tail = buf.split_off(end_abs);
 
                                     if let Some((calls, _)) = parse_tool_calls(&collected) {
                                         debug!(
@@ -374,12 +401,7 @@ where
                                             target: "adapter",
                                             "tool_parser: parse failed — streaming verbatim assistant chars"
                                         );
-                                        let mut flushed = collected;
-                                        flushed.push_str(&tail);
-                                        choice.delta.content = Some(flushed);
-                                        *this.state = ToolParseState::Detecting {
-                                            buffer: String::new(),
-                                        };
+                                        return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(collected))));
                                     }
                                     return Poll::Ready(Some(Ok(chunk)));
                                 }
@@ -432,7 +454,8 @@ where
                                             target: "adapter",
                                             "tool_parser: terminal flush unable to coerce tool JSON — flushing buffered text fallback"
                                         );
-                                        choice.delta.content = Some(flushed);
+                                        *this.state = ToolParseState::Done;
+                                        return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(flushed))));
                                     }
                                     *this.state = ToolParseState::Done;
                                     return Poll::Ready(Some(Ok(chunk)));
@@ -494,15 +517,7 @@ where
                                     target: "adapter",
                                     "tool_parser: terminal flush unable to coerce tool JSON — flushing buffered text fallback"
                                 );
-                                let chunk = make_end_chunk(
-                                    this.model,
-                                    Delta {
-                                        content: Some(buf),
-                                        ..Default::default()
-                                    },
-                                    "stop",
-                                );
-                                return Poll::Ready(Some(Ok(chunk)));
+                                return Poll::Ready(Some(Err(OpenAIAdapterError::ToolCallRepairNeeded(buf))));
                             }
                         }
                         ToolParseState::Done => return Poll::Ready(None),
@@ -564,5 +579,21 @@ The following is a tool call:
         assert_eq!(remaining, " trailing text");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.as_ref().unwrap().name, "get_weather");
+    }
+
+    #[test]
+    fn parse_tool_calls_single_object() {
+        let xml = r#"<tool_calls>{"name": "get_weather", "arguments": {"city": "New York"}}</tool_calls>"#;
+        let (calls, _) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.as_ref().unwrap().name, "get_weather");
+    }
+
+    #[test]
+    fn parse_tool_calls_single_object_with_surrounding_text() {
+        let xml = r#"<tool_calls>here is the tool: {"name": "f", "arguments": {}}</tool_calls>"#;
+        let (calls, remaining) = parse_tool_calls(xml).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(remaining, "");
     }
 }

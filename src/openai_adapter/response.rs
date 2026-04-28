@@ -9,18 +9,21 @@ mod sse_parser;
 mod state;
 mod tool_parser;
 
+use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use log::debug;
+use log::{debug, error};
 use pin_project_lite::pin_project;
 use rand::RngExt;
 
 use crate::openai_adapter::{
     OpenAIAdapterError, StreamResponse,
-    types::{ChatCompletion, ChatCompletionChunk, Choice, MessageResponse},
+    types::{ChatCompletion, ChatCompletionChunk, ChunkChoice, Choice, Delta, MessageResponse, ToolCall},
 };
 
 static CHATCMPL_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -77,6 +80,178 @@ fn find_stop_pos(content: &str, stop: &[String]) -> Option<usize> {
     stop.iter().filter_map(|s| content.find(s)).min()
 }
 
+/// RepairStream inner stream type
+#[allow(dead_code)]
+type ChunkStream = Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>>;
+
+/// Async closure type: takes raw XML text, returns repaired tool_calls via a fresh ds_core call.
+pub type RepairFn = Arc<
+    dyn Fn(
+            String,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Vec<ToolCall>, OpenAIAdapterError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Execute a repair: consume ds_core byte stream, extract text from ContentDelta frames,
+/// wrap in <tool_calls> if missing, parse to Vec<ToolCall>.
+pub(crate) async fn execute_tool_repair(
+    ds_stream: Pin<Box<dyn Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send>>,
+) -> Result<Vec<ToolCall>, OpenAIAdapterError> {
+    let sse = sse_parser::SseStream::new(ds_stream);
+    let state_stream = state::StateStream::new(sse);
+    futures::pin_mut!(state_stream);
+
+    let mut text = String::new();
+    while let Some(frame) = state_stream.next().await {
+        if let state::DsFrame::ContentDelta(t) = frame? {
+            text.push_str(&t);
+            if text.len() > tool_parser::MAX_XML_BUF_LEN {
+                return Err(OpenAIAdapterError::Internal(
+                    "repair model output exceeds buffer limit, abandoning repair".into(),
+                ));
+            }
+        }
+    }
+
+    let wrapped = if text.contains("<tool_calls>") {
+        text.trim().to_string()
+    } else {
+        format!("<tool_calls>{}</tool_calls>", text.trim())
+    };
+
+    let (calls, _) = tool_parser::parse_tool_calls(&wrapped).ok_or_else(|| {
+        OpenAIAdapterError::Internal(format!(
+            "repair model returned unparseable content: {}",
+            &text[..text.len().min(200)]
+        ))
+    })?;
+
+    Ok(calls)
+}
+
+/// RepairStream: catches ToolCallRepairNeeded errors from the upstream stream,
+/// calls the repair closure to get corrected tool_calls, then resumes forwarding.
+enum RepairState {
+    Forwarding,
+    Repairing {
+        future: Pin<Box<dyn Future<Output = Result<Vec<ToolCall>, OpenAIAdapterError>> + Send>>,
+    },
+    RepairFailed(String),
+    Done,
+}
+
+pin_project! {
+    struct RepairStream<S> {
+        #[pin]
+        inner: S,
+        repair_fn: RepairFn,
+        state: RepairState,
+    }
+}
+
+impl<S> RepairStream<S> {
+    fn new(inner: S, repair_fn: RepairFn) -> Self {
+        Self {
+            inner,
+            repair_fn,
+            state: RepairState::Forwarding,
+        }
+    }
+}
+
+impl<S, E> Stream for RepairStream<S>
+where
+    S: Stream<Item = Result<ChatCompletionChunk, E>>,
+    E: Into<OpenAIAdapterError>,
+{
+    type Item = Result<ChatCompletionChunk, OpenAIAdapterError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        loop {
+            match this.state {
+                RepairState::Forwarding => {
+                    match this.inner.as_mut().poll_next(cx) {
+                        Poll::Ready(Some(Ok(chunk))) => return Poll::Ready(Some(Ok(chunk))),
+                        Poll::Ready(Some(Err(e))) => {
+                            let e = e.into();
+                            if let OpenAIAdapterError::ToolCallRepairNeeded(raw_xml) = e {
+                                debug!(target: "adapter", "RepairStream catching repair signal");
+                                let repair_fn = this.repair_fn.clone();
+                                let future = (repair_fn)(raw_xml);
+                                *this.state = RepairState::Repairing { future };
+                                continue;
+                            }
+                            return Poll::Ready(Some(Err(e)));
+                        }
+                        Poll::Ready(None) => {
+                            *this.state = RepairState::Done;
+                            return Poll::Ready(None);
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                RepairState::Repairing { future } => {
+                    match future.as_mut().poll(cx) {
+                        Poll::Ready(Ok(calls)) => {
+                            debug!(target: "adapter", "RepairStream repair succeeded with {} calls", calls.len());
+                            // Emit repair result as tool_calls chunk then resume forwarding
+                            let chunk = make_repair_chunk(calls);
+                            *this.state = RepairState::Forwarding;
+                            return Poll::Ready(Some(Ok(chunk)));
+                        }
+                        Poll::Ready(Err(e)) => {
+                            error!(target: "adapter", "RepairStream repair failed: {}", e);
+                            *this.state = RepairState::RepairFailed(e.to_string());
+                            continue;
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                RepairState::RepairFailed(msg) => {
+                    let msg = std::mem::take(msg);
+                    return Poll::Ready(Some(Err(OpenAIAdapterError::Internal(msg))));
+                }
+                RepairState::Done => return Poll::Ready(None),
+            }
+        }
+    }
+}
+
+static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Build a synthetic tool_calls chunk from repaired call list.
+fn make_repair_chunk(calls: Vec<ToolCall>) -> ChatCompletionChunk {
+    let model = calls.first()
+        .and_then(|c| c.function.as_ref())
+        .map(|_| "".to_string())
+        .unwrap_or_default();
+    ChatCompletionChunk {
+        id: format!("chatcmpl-repair-{}", CALL_ID_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        object: "chat.completion.chunk",
+        created: 0,
+        model,
+        choices: vec![ChunkChoice {
+            index: 0,
+            delta: Delta {
+                role: Some("assistant"),
+                content: None,
+                tool_calls: Some(calls),
+                reasoning_content: None,
+                ..Default::default()
+            },
+            finish_reason: Some("tool_calls"),
+            logprobs: None,
+        }],
+        usage: None,
+        service_tier: None,
+        system_fingerprint: None,
+    }
+}
+
 pin_project! {
     struct StopStream<S> {
         #[pin]
@@ -91,7 +266,7 @@ pin_project! {
 
 impl<S> Stream for StopStream<S>
 where
-    S: Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>>,
+    S: Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Unpin,
 {
     type Item = Result<Bytes, OpenAIAdapterError>;
 
@@ -160,14 +335,15 @@ pub(crate) fn stream<S>(
     stop: Vec<String>,
     prompt_tokens: u32,
     tools_present: bool,
+    repair_fn: Option<RepairFn>,
 ) -> StreamResponse
 where
     S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send + 'static,
 {
     debug!(
         target: "adapter",
-        "building streaming response: model={}, include_usage={}, include_obfuscation={}, stop_count={}",
-        model, include_usage, include_obfuscation, stop.len()
+        "building streaming response: model={}, include_usage={}, include_obfuscation={}, stop_count={}, repair={}",
+        model, include_usage, include_obfuscation, stop.len(), repair_fn.is_some()
     );
     let sse = sse_parser::SseStream::new(ds_stream);
     let state_stream = state::StateStream::new(sse);
@@ -180,8 +356,17 @@ where
        tools_present,
     );
     let tool_parsed = tool_parser::ToolCallStream::new(converted, model);
+
+    // Wrap with RepairStream if repair function is provided
+    let inner_stream: Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk, OpenAIAdapterError>> + Send>> =
+        if let Some(rf) = repair_fn {
+            Box::pin(RepairStream::new(tool_parsed, rf))
+        } else {
+            Box::pin(tool_parsed)
+        };
+
     let stop_stream = StopStream {
-        inner: tool_parsed,
+        inner: inner_stream,
         stop,
         stopped: false,
         sent_len: 0,
@@ -459,6 +644,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (plain_text) ===");
@@ -500,6 +686,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (include_usage) ===");
@@ -544,6 +731,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls) ===");
@@ -593,6 +781,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (fragmented_tool_calls_with_thinking) ===");
@@ -651,6 +840,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_search_and_open) ===");
@@ -697,6 +887,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (include_obfuscation) ===");
@@ -790,6 +981,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls with leading text, fragmented) ===");
@@ -853,6 +1045,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (leading text + multi-chunk JSON fragments) ===");
@@ -901,6 +1094,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (thinking + leading + fragmented JSON) ===");
@@ -950,6 +1144,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (JSON split right after tool_call) ===");
@@ -982,6 +1177,7 @@ mod tests {
             vec![],
             0,
             false,
+            None,
         ))
         .await;
         println!("\n=== STREAM CHUNKS (tool_calls, no leading text) ===");

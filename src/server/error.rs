@@ -90,6 +90,7 @@ fn openai_error_response(err: &ServerError) -> Response {
                 OpenAIAdapterError::Overloaded => ("server_error", "overloaded"),
                 OpenAIAdapterError::ProviderError(_) => ("server_error", "provider_error"),
                 OpenAIAdapterError::Internal(_) => ("server_error", "internal_error"),
+                OpenAIAdapterError::ToolCallRepairNeeded(_) => ("server_error", "internal_error"),
             };
             (status, error_type, code)
         }

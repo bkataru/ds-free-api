@@ -88,6 +88,7 @@ async fn handle_chat(
             stop,
             prompt_tokens,
             tools_present,
+            Some(adapter.create_repair_fn()),
         )))
     } else {
         let json =

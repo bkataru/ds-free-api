@@ -68,6 +68,7 @@ impl AnthropicCompat {
             openai_req.stop,
             openai_req.prompt_tokens,
             openai_req.tools_present,
+            Some(self.openai_adapter.create_repair_fn()),
         );
         Ok(response::from_chat_completion_stream(
             openai_stream,
@@ -110,6 +111,7 @@ impl From<OpenAIAdapterError> for AnthropicCompatError {
             OpenAIAdapterError::Overloaded => Self::Overloaded,
             OpenAIAdapterError::ProviderError(msg) => Self::Internal(msg),
             OpenAIAdapterError::Internal(msg) => Self::Internal(msg),
+            OpenAIAdapterError::ToolCallRepairNeeded(msg) => Self::Internal(msg),
         }
     }
 }
