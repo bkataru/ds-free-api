@@ -17,7 +17,6 @@
   <img src="https://img.shields.io/github/languages/code-size/bkataru/ds-free-api.svg">
 </p>
 
-[中文](README.md)
 
 **Reverse proxy and adapter for free DeepSeek web chat to OpenAI and Anthropic APIs**
 
