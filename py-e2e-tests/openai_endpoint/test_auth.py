@@ -11,7 +11,8 @@ def test_invalid_token(client):
     with pytest.raises(APIError) as exc_info:
         bad_client.chat.completions.create(
             model="deepseek-default",
-            messages=[{"role": "user", "content": "你好"}],
+            messages=[{"role": "user", "content": "Hello"}],
         )
 
     assert exc_info.value.status_code == 401
+1ch|

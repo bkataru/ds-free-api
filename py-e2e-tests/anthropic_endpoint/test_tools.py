@@ -7,11 +7,11 @@ MODEL = "deepseek-default"
 WEATHER_TOOL = {
     "type": "custom",
     "name": "get_weather",
-    "description": "获取指定城市的天气",
+    "description": "Get weather for a specified city",
     "input_schema": {
         "type": "object",
         "properties": {
-            "city": {"type": "string", "description": "城市名称"}
+            "city": {"type": "string", "description": "City name"}
         },
         "required": ["city"],
     },
@@ -19,26 +19,26 @@ WEATHER_TOOL = {
 
 
 def _extract_tool_use_blocks(msg):
-    """从消息中提取所有 tool_use 块。"""
+    """Extract all tool_use blocks from a message."""
     return [b for b in msg.content if b.type == "tool_use"]
 
 
 def _extract_text(msg):
-    """从消息中提取所有文本内容。"""
+    """Extract all text content from a message."""
     return "".join(b.text for b in msg.content if b.type == "text")
 
 
 # =============================================================================
-# 基础工具调用
+# Basic tool calling
 # =============================================================================
 
 
 def test_tool_call_forced(client):
-    """强制模式下必须触发 tool_use，且参数正确。"""
+    """Forced mode must trigger tool_use with correct parameters."""
     msg = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": "查询北京天气"}],
+        messages=[{"role": "user", "content": "Check Beijing weather"}],
         tools=[WEATHER_TOOL],
         tool_choice={"type": "any"},
     )
@@ -49,22 +49,22 @@ def test_tool_call_forced(client):
     assert msg.stop_reason == "tool_use"
 
     tool_blocks = _extract_tool_use_blocks(msg)
-    assert len(tool_blocks) == 1, f"期望 1 个 tool_use 块，实际 {len(tool_blocks)}"
+    assert len(tool_blocks) == 1, f"Expected 1 tool_use block, got {len(tool_blocks)}"
 
     tb = tool_blocks[0]
     assert tb.name == "get_weather"
     assert tb.id.startswith("toolu_")
     assert isinstance(tb.input, dict)
     assert "city" in tb.input
-    assert tb.input["city"] in ("北京", "Beijing")
+    assert tb.input["city"] == "Beijing"
 
 
 def test_tool_call_stream_event_sequence(client):
-    """流式工具调用必须输出完整事件序列：start -> input_json_delta -> stop。"""
+    """Streaming tool call must output complete event sequence: start -> input_json_delta -> stop."""
     with client.messages.stream(
         model=MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": "查询北京天气"}],
+        messages=[{"role": "user", "content": "Check Beijing weather"}],
         tools=[WEATHER_TOOL],
         tool_choice={"type": "any"},
     ) as stream:
@@ -72,49 +72,49 @@ def test_tool_call_stream_event_sequence(client):
 
     assert events
 
-    # 验证 message_start
+    # Verify message_start
     assert events[0].type == "message_start"
     assert events[0].message.id.startswith("msg_")
     assert events[0].message.role == "assistant"
 
-    # 收集所有 tool_use 相关事件
+    # Collect all tool_use related events
     tool_starts = [e for e in events if e.type == "content_block_start" and e.content_block.type == "tool_use"]
     tool_deltas = [e for e in events if e.type == "content_block_delta" and hasattr(e.delta, "partial_json")]
     tool_stops = [e for e in events if e.type == "content_block_stop"]
 
-    assert len(tool_starts) == 1, f"期望 1 个 tool_use start，实际 {len(tool_starts)}"
-    assert len(tool_deltas) == 1, f"期望 1 个 input_json_delta，实际 {len(tool_deltas)}"
-    # 可能有 thinking block 的 stop，所以总 stop 数 >= 1
-    assert len(tool_stops) >= 1, f"期望至少 1 个 content_block_stop，实际 {len(tool_stops)}"
+    assert len(tool_starts) == 1, f"Expected 1 tool_use start, got {len(tool_starts)}"
+    assert len(tool_deltas) == 1, f"Expected 1 input_json_delta, got {len(tool_deltas)}"
+    # May have thinking block stop, so total stops >= 1
+    assert len(tool_stops) >= 1, f"Expected at least 1 content_block_stop, got {len(tool_stops)}"
 
-    # 验证 start 事件
+    # Verify start event
     start = tool_starts[0]
     assert start.content_block.name == "get_weather"
     assert start.content_block.id.startswith("toolu_")
-    assert start.content_block.input == {}, "start 时 input 应为空对象"
+    assert start.content_block.input == {}, "input should be empty object at start"
 
-    # 验证 delta 事件
+    # Verify delta event
     delta = tool_deltas[0]
     assert delta.delta.partial_json
     parsed = pytest.importorskip("json").loads(delta.delta.partial_json)
     assert isinstance(parsed, dict)
     assert "city" in parsed
 
-    # 验证 message_delta
+    # Verify message_delta
     msg_deltas = [e for e in events if e.type == "message_delta"]
     assert len(msg_deltas) == 1
     assert msg_deltas[0].delta.stop_reason == "tool_use"
 
-    # 验证 message_stop
+    # Verify message_stop
     assert events[-1].type == "message_stop"
 
 
 def test_tool_call_no_force_falls_back_to_text(client):
-    """非强制模式下，模型可能直接回答。"""
+    """Without forcing, the model may answer directly."""
     msg = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": "今天天气怎么样？"}],
+        messages=[{"role": "user", "content": "How is the weather today?"}],
         tools=[WEATHER_TOOL],
         tool_choice={"type": "auto"},
     )
@@ -125,21 +125,21 @@ def test_tool_call_no_force_falls_back_to_text(client):
     tool_blocks = _extract_tool_use_blocks(msg)
     text = _extract_text(msg)
 
-    # 至少要有 tool_use 或 text 之一
-    assert tool_blocks or text, "响应必须包含 tool_use 或 text"
+    # Must include at least one of tool_use or text
+    assert tool_blocks or text, "Response must include tool_use or text"
 
 
 # =============================================================================
-# Tool Choice 模式
+# Tool Choice mode
 # =============================================================================
 
 
 def test_tool_choice_required_any(client):
-    """tool_choice=any 映射为 required，应触发 tool_use。"""
+    """tool_choice=any maps to required and must trigger tool_use."""
     msg = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": "查北京天气"}],
+        messages=[{"role": "user", "content": "Check Beijing weather"}],
         tools=[WEATHER_TOOL],
         tool_choice={"type": "any"},
     )
@@ -150,11 +150,11 @@ def test_tool_choice_required_any(client):
 
 
 def test_tool_choice_none_ignores_tools(client):
-    """tool_choice=none 不应触发 tool_use。"""
+    """tool_choice=none should not trigger tool_use."""
     msg = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": "你好"}],
+        messages=[{"role": "user", "content": "Hello"}],
         tools=[WEATHER_TOOL],
         tool_choice={"type": "none"},
     )
@@ -166,11 +166,11 @@ def test_tool_choice_none_ignores_tools(client):
 
 
 def test_disable_parallel_tool_use(client):
-    """disable_parallel_tool_use 映射为 parallel_tool_calls=false。"""
+    """disable_parallel_tool_use maps to parallel_tool_calls=false."""
     msg = client.messages.create(
         model=MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": "同时查北京和上海天气"}],
+        messages=[{"role": "user", "content": "Check weather in both Beijing and Shanghai"}],
         tools=[WEATHER_TOOL],
         tool_choice={"type": "auto", "disable_parallel_tool_use": True},
     )
@@ -179,17 +179,17 @@ def test_disable_parallel_tool_use(client):
 
 
 # =============================================================================
-# 工具调用历史回环
+# Tool call round-trip
 # =============================================================================
 
 
 def test_tool_use_followed_by_tool_result(client):
-    """完整的工具调用-结果回环应正常工作。"""
+    """Full tool call/result round-trip should work."""
     msg = client.messages.create(
         model=MODEL,
         max_tokens=1024,
         messages=[
-            {"role": "user", "content": "查北京天气"},
+            {"role": "user", "content": "Check Beijing weather"},
             {
                 "role": "assistant",
                 "content": [
@@ -197,7 +197,7 @@ def test_tool_use_followed_by_tool_result(client):
                         "type": "tool_use",
                         "id": "toolu_abc",
                         "name": "get_weather",
-                        "input": {"city": "北京"},
+                        "input": {"city": "Beijing"},
                     }
                 ],
             },
@@ -207,7 +207,7 @@ def test_tool_use_followed_by_tool_result(client):
                     {
                         "type": "tool_result",
                         "tool_use_id": "toolu_abc",
-                        "content": "晴，25°C",
+                        "content": "Sunny, 25°C",
                     }
                 ],
             },

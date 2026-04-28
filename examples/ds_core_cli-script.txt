@@ -1,32 +1,32 @@
-# ds-core CLI 测试脚本示例
-# 注释行以 # 开头
+# ds-core CLI example script
+# Lines starting with # are comments
 
-# 查看账号状态
+# Check account status
 status
 
-# 切换模型类型 (默认取 config 第一项)
+# Switch model type (defaults to first entry in config)
 model expert
 
-# 简单对话 (thinking=false, search=false 可省略)
-chat 你好，请介绍一下 Rust 语言
+# Simple chat (thinking=false, search=false are optional)
+chat Hello, please introduce the Rust language
 
-# 启用思考模式
-chat 解释所有权和借用的关系 true false
+# Enable thinking mode
+chat Explain ownership and borrowing true false
 
-# 启用搜索
-chat Rust 最新版本有什么新特性 false true
+# Enable search
+chat What's new in the latest Rust version false true
 
-# 双开
-chat Rust 异步运行时对比 true true
+# Both thinking and search
+chat Compare Rust async runtimes true true
 
-# raw 模式：不透传聚合，直接逐字节输出原始 SSE
-chat 你好 --raw
+# Raw mode: pass through raw SSE bytes without aggregation
+chat Hello --raw
 
-# 并发测试：同时发起 3 个请求
-concurrent 3 你好，请简短回复 true false
+# Concurrent test: fire 3 requests at once
+concurrent 3 Hello, reply briefly true false
 
-# 并发 raw 模式
-concurrent 2 你好，请简短回复 true false --raw
+# Concurrent raw mode
+concurrent 2 Hello, reply briefly true false --raw
 
-# 退出
+# Exit
 quit

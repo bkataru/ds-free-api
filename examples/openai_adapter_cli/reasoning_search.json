@@ -1,7 +1,7 @@
 {
   "model": "deepseek-expert",
   "messages": [
-    { "role": "user", "content": "分析一下 Rust 异步运行时" }
+    { "role": "user", "content": "Analyze Rust async runtimes" }
   ],
   "reasoning_effort": "high",
   "web_search_options": { "search_context_size": "high" }

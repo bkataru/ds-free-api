@@ -20,9 +20,9 @@
 
 **Reverse proxy and adapter for free DeepSeek web chat to OpenAI and Anthropic APIs**
 
-> Proxies DeepSeek's web endpoints and exposes them as streaming OpenAI-compatible chat completions (`/v1/chat/completions`) and Anthropic Messages (`/anthropic/v1/messages`), including tools—thin HTTP surface in front of DeepSeek's own web stack.
+> Proxies DeepSeek's web endpoints and exposes them as streaming OpenAI-compatible chat completions (`/v1/chat/completions`) and Anthropic Messages (`/anthropic/v1/messages`), including tools — thin HTTP surface in front of DeepSeek's own web stack.
 
-**Backed by** Rust, axum/Tokio, serde, and plain TOML—one static binary plus `config.toml`.
+**Backed by** Rust, axum/Tokio, serde, and plain TOML — one static binary plus `config.toml`.
 
 Cross-platform deploy: no Electron, no extra runtime beyond what you ship.
 
@@ -36,17 +36,29 @@ Treat this as a lab adapter, not a production entitlement to someone else's infr
 
 ## Credits
 
-Forked from **[llm-router/ds-free-api](https://github.com/NIyueeE/ds-free-api)** by **NIyueeE**. The original project reverse-engineered DeepSeek's web protocol and built the foundation this fork extends.
+This project is a fork of **[NIyueeE/ds-free-api](https://github.com/NIyueeE/ds-free-api)** — the original work that reverse-engineered DeepSeek's web protocol and built the adapter foundation. Significant upstream contributions we carry forward:
+
+- Protocol reverse engineering and DeepSeek web API integration
+- Account pool with idle-aware rotation
+- Tool-call self-repair with live model fallback
+- Request tracing via `x-ds-account` header
+- Temp session lifecycle (create, upload, PoW, completion, delete)
+- Arguments type normalization and Semaphore cap
+- PoW challenge computation and SSE stream parsing
+
+Thank you, NIyueeE, for open-sourcing the groundwork.
 
 ## This fork
 
-- **`tools_present` compatibility** — Aligns streamed tool deltas with consumers that infer presence from SSE chunks.
+Extensions and modifications specific to this fork:
+
+- **`tools_present` compatibility** — Aligns streamed tool deltas with consumers that infer presence from SSE chunks (OMP, Claude Code, opencode).
 - **Reasoning merge** — Concatenates thought traces and assistant content without breaking clients that gate on canonical message ordering.
 - **Anthropic compat layer** — First-class `/anthropic/v1/messages` mapping so Claude-shaped SDKs work without a second proxy.
-- **Tool-call self-repair** — Catches malformed XML tool calls and re-invokes the model to fix them, increasing tool-calling reliability.
-- **Temp session lifecycle** — Per-request create → file upload → PoW → completion → delete, avoiding session leaks.
-- **Keepalive stream** — Injects SSE keepalive comments on 1700ms idle to prevent connection timeouts.
+- **Keepalive stream** — Injects SSE keepalive comments on 1700 ms idle to prevent connection timeouts.
 - **JSON root endpoint** — `GET /` returns available endpoint URLs and project metadata (no auth required).
+- **English source base** — All docs, comments, and log messages in English.
+- **Singular tool-call markers** — Unified markers across prompt assembly, parsing, and repair.
 
 ## Quick start
 
@@ -57,7 +69,6 @@ Download a release for your platform from [releases](https://github.com/bkataru/
   ├── ds-free-api          # binary
   ├── LICENSE
   ├── README.md
-  ├── README.en.md
   └── config.example.toml  # sample config
 ```
 
@@ -94,7 +105,7 @@ area_code = ""
 password = "pass1"
 ```
 
-Shared throwaway logins for smoke tests—do not send secrets through them (sessions are torn down, yet leaks are still possible):
+Shared throwaway logins for smoke tests — do not send secrets through them (sessions are torn down, yet leaks are still possible):
 
 ```text
 rivigol378@tatefarm.com
@@ -110,7 +121,7 @@ slowly1285@wplacetools.com
 test12345
 ```
 
-Need more throughput? Spin up extra accounts via disposable inboxes (not all domains work) and register on the international site with whatever network path you already use. [tempmail.la](https://tempmail.la/) is a decent starting point—try a few aliases if one bounces.
+Need more throughput? Spin up extra accounts via disposable inboxes (not all domains work) and register on the international site with whatever network path you already use. [tempmail.la](https://tempmail.la/) is a decent starting point — try a few aliases if one bounces.
 
 ## API endpoints
 
@@ -163,8 +174,8 @@ flowchart TB
         direction LR
 
         subgraph AC ["Anthropic compat (anthropic_compat)"]
-            A2OReq["Anthropic → OpenAI<br/>request map"]:::adapter
-            O2AResp["OpenAI → Anthropic<br/>response map"]:::adapter
+            A2OReq["Anthropic to OpenAI<br/>request map"]:::adapter
+            O2AResp["OpenAI to Anthropic<br/>response map"]:::adapter
         end
 
         subgraph OA ["OpenAI adapter (openai_adapter)"]
@@ -208,10 +219,10 @@ flowchart TB
 
 Data paths:
 
-- **OpenAI request** — `JSON body` → `normalize` (validation + defaults) → `tools` extraction → `prompt` ChatML assembly → `resolver` model mapping → `ChatRequest`.
-- **OpenAI response** — `DeepSeek SSE bytes` → `sse_parser` → `state` patch machine → `converter` format pass → `tool_parser` XML extraction → `StopStream` truncation → `OpenAI SSE bytes`.
-- **Anthropic request** — `Anthropic JSON` → `to_openai_request()` → joins the OpenAI request path.
-- **Anthropic response** — OpenAI output → `from_chat_completion_stream()` / `from_chat_completion_bytes()` → `Anthropic SSE/JSON`.
+- **OpenAI request** — JSON body, normalize (validation + defaults), tools extraction, prompt ChatML assembly, resolver model mapping, ChatRequest.
+- **OpenAI response** — DeepSeek SSE bytes, sse_parser, state patch machine, converter format pass, tool_parser XML extraction, StopStream truncation, OpenAI SSE bytes.
+- **Anthropic request** — Anthropic JSON, `to_openai_request()`, joins the OpenAI request path.
+- **Anthropic response** — OpenAI output, `from_chat_completion_stream()` / `from_chat_completion_bytes()`, Anthropic SSE/JSON.
 
 ## Commands
 
@@ -242,6 +253,6 @@ just e2e-serve
 
 [Apache License 2.0](LICENSE)
 
-DeepSeek's official API is inexpensive—fund it when you graduate from web experiments.
+DeepSeek's official API is inexpensive — fund it when you graduate from web experiments.
 
 **No commercial use.** Do not stress DeepSeek's web tier or treat this as a stealth production backend. You own the operational risk.

@@ -8,11 +8,11 @@ WEATHER_TOOL = {
     "type": "function",
     "function": {
         "name": "get_weather",
-        "description": "获取指定城市的天气",
+        "description": "Get weather for a specified city",
         "parameters": {
             "type": "object",
             "properties": {
-                "city": {"type": "string", "description": "城市名称"}
+                "city": {"type": "string", "description": "City name"}
             },
             "required": ["city"],
         },
@@ -21,15 +21,15 @@ WEATHER_TOOL = {
 
 
 # =============================================================================
-# 基础工具调用
+# Basic tool calling
 # =============================================================================
 
 
 def test_tool_call_required(client):
-    """强制模式下必须触发 tool_calls，且参数正确。"""
+    """Forced mode must trigger tool_calls with correct parameters."""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "查询北京天气"}],
+        messages=[{"role": "user", "content": "Check Beijing weather"}],
         tools=[WEATHER_TOOL],
         tool_choice="required",
         stream=False,
@@ -54,14 +54,14 @@ def test_tool_call_required(client):
     args = pytest.importorskip("json").loads(tc.function.arguments)
     assert isinstance(args, dict)
     assert "city" in args
-    assert args["city"] in ("北京", "Beijing")
+    assert args["city"] in ("Beijing", "Beijing")
 
 
 def test_tool_call_stream_chunks(client):
-    """流式工具调用应能收集到完整的 tool_calls。"""
+    """Streaming tool call should collect complete tool_calls."""
     stream = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "查询北京天气"}],
+        messages=[{"role": "user", "content": "Check Beijing weather"}],
         tools=[WEATHER_TOOL],
         tool_choice="required",
         stream=True,
@@ -73,22 +73,22 @@ def test_tool_call_stream_chunks(client):
     last = chunks[-1]
     assert last.choices[0].finish_reason == "tool_calls"
 
-    # 收集所有 delta 中的 tool_calls
+    # Collect all tool_calls from deltas
     tool_calls = []
     for c in chunks:
         if c.choices and c.choices[0].delta.tool_calls:
             tool_calls.extend(c.choices[0].delta.tool_calls)
 
-    assert tool_calls, "流式响应中应包含 tool_calls"
+    assert tool_calls, "Streaming response should contain tool_calls"
     names = [tc.function.name for tc in tool_calls if tc.function and tc.function.name]
     assert "get_weather" in names
 
 
 def test_tool_call_auto_may_respond_with_text(client):
-    """auto 模式下模型可能直接回答。"""
+    """Auto mode: model may respond with text directly."""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "今天天气怎么样？"}],
+        messages=[{"role": "user", "content": "How is the weather today?"}],
         tools=[WEATHER_TOOL],
         tool_choice="auto",
         stream=False,
@@ -97,27 +97,27 @@ def test_tool_call_auto_may_respond_with_text(client):
     assert resp.choices[0].finish_reason in ("stop", "tool_calls")
     msg = resp.choices[0].message
     assert msg.role == "assistant"
-    # 至少要有 content 或 tool_calls 之一
+    # Should have at least content or tool_calls
     assert msg.content or msg.tool_calls
 
 
 # =============================================================================
-# Tool Choice 模式
+# Tool Choice modes
 # =============================================================================
 
 
 def test_tool_choice_named_function(client):
-    """指定具体工具时应调用该工具。使用明确提示词提高触发概率。"""
+    """When specifying a particular tool, should call that tool. Uses explicit prompt to increase trigger probability."""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "请使用 get_weather 工具查询北京天气"}],
+        messages=[{"role": "user", "content": "Use the get_weather tool to check Beijing weather"}],
         tools=[
             WEATHER_TOOL,
             {
                 "type": "function",
                 "function": {
                     "name": "get_time",
-                    "description": "获取当前时间",
+                    "description": "Get current time",
                     "parameters": {},
                 },
             },
@@ -125,17 +125,17 @@ def test_tool_choice_named_function(client):
         tool_choice={"type": "function", "function": {"name": "get_weather"}},
         stream=False,
     )
-    # 强制指定工具后应触发 tool_calls，若模型未触发则至少验证 finish_reason
+    # After forcing a specific tool, should trigger tool_calls; if model does not, at least verify finish_reason
     assert resp.choices[0].finish_reason in ("stop", "tool_calls")
     if resp.choices[0].message.tool_calls:
         assert resp.choices[0].message.tool_calls[0].function.name == "get_weather"
 
 
 def test_tool_choice_none_ignores_tools(client):
-    """none 模式下不应触发 tool_calls。"""
+    """none mode should not trigger tool_calls。"""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "你好"}],
+        messages=[{"role": "user", "content": "Hello"}],
         tools=[WEATHER_TOOL],
         tool_choice="none",
         stream=False,
@@ -146,10 +146,10 @@ def test_tool_choice_none_ignores_tools(client):
 
 
 def test_parallel_tool_calls_false(client):
-    """parallel_tool_calls=false 应正常处理。"""
+    """parallel_tool_calls=false should be handled normally."""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "同时查北京和上海天气"}],
+        messages=[{"role": "user", "content": "Check weather in both Beijing and Shanghai"}],
         tools=[WEATHER_TOOL],
         parallel_tool_calls=False,
         stream=False,
@@ -158,21 +158,21 @@ def test_parallel_tool_calls_false(client):
 
 
 # =============================================================================
-# 自定义工具
+# Custom tools
 # =============================================================================
 
 
 def test_custom_tool_grammar(client):
-    """自定义工具（grammar 格式）应能正常解析。"""
+    """Custom tool (grammar format) should parse normally."""
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "user", "content": "生成一个符合语法规则的字符串"}],
+        messages=[{"role": "user", "content": "Generate a string conforming to grammar rules"}],
         tools=[
             {
                 "type": "custom",
                 "custom": {
                     "name": "grammar_tool",
-                    "description": "基于语法的工具",
+                    "description": "Grammar-based tool",
                     "format": {
                         "type": "grammar",
                         "grammar": {

@@ -18,4 +18,4 @@ def pytest_runtest_setup(item):
             c = OpenAI(base_url=BASE_URL, api_key=API_KEY)
             c.models.list(timeout=5)
         except APIConnectionError as exc:
-            pytest.skip(f"本地服务未启动或无法连接: {exc}")
+            pytest.skip(f"local server not running or unreachable: {exc}")

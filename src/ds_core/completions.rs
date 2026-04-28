@@ -167,16 +167,14 @@ impl Completions {
         req: ChatRequest,
         request_id: &str,
     ) -> Result<ChatResponse, CoreError> {
-        // 1. Acquire an idle account (fork: model_type filtering preserved)
-        let guard = self
-            .pool
-            .get_account(&req.model_type)
+        // 1. Acquire an idle account (temp-session flow, no model_type filtering)
+        let guard = self.pool
+            .get_account()
             .ok_or_else(|| {
                 log::warn!(
                     target: "ds_core::accounts",
-                    "req={} no available account in pool: model_type={}",
-                    request_id,
-                    req.model_type
+                    "req={} no available account in pool",
+                    request_id
                 );
                 CoreError::Overloaded
             })?;
@@ -187,9 +185,8 @@ impl Completions {
 
         log::debug!(
             target: "ds_core::accounts",
-            "req={} account assigned: model_type={}, token={}..{}",
+            "req={} account assigned: token={}..{}",
             request_id,
-            req.model_type,
             &account_id[..4.min(account_id.len())],
             &account_id[account_id.len().saturating_sub(4)..]
         );

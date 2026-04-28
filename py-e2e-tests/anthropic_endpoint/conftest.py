@@ -28,4 +28,4 @@ def pytest_runtest_setup(item):
             c = _make_client()
             c.models.list(timeout=5)
         except (APIConnectionError, AuthenticationError) as exc:
-            pytest.skip(f"本地服务未启动或无法连接: {exc}")
+            pytest.skip(f"local server not running or unreachable: {exc}")

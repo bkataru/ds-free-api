@@ -3,7 +3,7 @@
 set positional-arguments
 
 # Run all checks: type check, lint, format, audit, unused deps
-# 前置: cargo install cargo-audit && cargo install cargo-machete
+# Prereq: cargo install cargo-audit && cargo install cargo-machete
 check:
   cargo check
   cargo clippy -- -D warnings
@@ -32,7 +32,7 @@ serve *ARGS:
   cargo run -- "$@"
 
 # Run Python e2e tests (requires server running; will skip with hint if not)
-# -n 2: 并发测试（DeepSeek 免费 API 不支持更高并发，4 workers 会触发大量空响应）
+# -n 2: concurrent tests (DeepSeek free API rejects higher concurrency; 4 workers trigger mass empty responses)
 e2e *ARGS:
   cd py-e2e-tests && uv run python -m pytest -n 2 "$@"
 

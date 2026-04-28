@@ -16,7 +16,8 @@ def test_invalid_token(client):
         bad_client.messages.create(
             model="deepseek-default",
             max_tokens=1024,
-            messages=[{"role": "user", "content": "你好"}],
+            messages=[{"role": "user", "content": "Hello"}],
         )
 
     assert exc_info.value.status_code == 401
+1ch|

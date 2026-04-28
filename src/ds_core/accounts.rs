@@ -184,11 +184,14 @@ impl AccountPool {
         Ok(())
     }
 
-    /// Round-robin acquire a free account (must have a session for `model_type`).
     /// Acquire the free account that has been idle the longest (must have a session for `model_type`).
     ///
     /// Iterates all accounts, picks the one with the oldest release timestamp to maximize reuse gaps.
-    pub fn get_account(&self, model_type: &str) -> Option<AccountGuard> {
+    #[allow(dead_code)]
+    /// Acquire the free account that has been idle the longest (must have a session for `model_type`).
+    ///
+    /// Iterates all accounts, picks the one with the oldest release timestamp to maximize reuse gaps.
+    pub fn get_account_by_model(&self, model_type: &str) -> Option<AccountGuard> {
         if self.accounts.is_empty() {
             return None;
         }
@@ -223,6 +226,45 @@ impl AccountPool {
         })
     }
 
+
+    /// Acquire the free account that has been idle the longest (no session filtering).
+    ///
+    /// Used by the temp-session flow where sessions are created per-request and
+    /// model_type filtering does not apply.
+    pub fn get_account(&self) -> Option<AccountGuard> {
+        if self.accounts.is_empty() {
+            return None;
+        }
+
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let mut best_idx: Option<usize> = None;
+        let mut best_idle = i64::MIN;
+
+        for (i, account) in self.accounts.iter().enumerate() {
+            if account.is_busy() {
+                continue;
+            }
+            let idle = now_ms - account.last_released.load(Ordering::Relaxed);
+            if idle > best_idle {
+                best_idle = idle;
+                best_idx = Some(i);
+            }
+        }
+
+        let idx = best_idx?;
+        let account = &self.accounts[idx];
+        account
+            .is_busy
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .ok()?;
+        Some(AccountGuard {
+            account: Arc::clone(account),
+        })
+    }
     /// Return a snapshot of pool members' identity fields
     pub fn account_statuses(&self) -> Vec<AccountStatus> {
         self.accounts
