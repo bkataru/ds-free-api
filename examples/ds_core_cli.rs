@@ -111,10 +111,12 @@ async fn main() -> anyhow::Result<()> {
                         thinking_enabled: thinking,
                         search_enabled: search,
                         model_type: current_model_type.clone(),
-                    })
+                        files: vec![],
+                    }, "ds-core-cli")
                     .await
                 {
-                    Ok(mut stream) => {
+                    Ok(response) => {
+                        let mut stream = response.stream;
                         if raw {
                             println!("[Stream start - raw]");
                             while let Some(chunk) = stream.next().await {
@@ -259,10 +261,12 @@ async fn run_concurrent(
                         thinking_enabled: thinking,
                         search_enabled: search,
                         model_type,
-                    })
+                        files: vec![],
+                    }, "ds-core-cli")
                     .await
                 {
-                    Ok(mut stream) => {
+                    Ok(response) => {
+                        let mut stream = response.stream;
                         let mut output = String::new();
                         while let Some(chunk) = stream.next().await {
                             match chunk {
@@ -421,10 +425,12 @@ async fn handle_line(
                     thinking_enabled: thinking,
                     search_enabled: search,
                     model_type: model_type.clone(),
-                })
+                    files: vec![],
+                }, "ds-core-cli")
                 .await
             {
-                Ok(mut stream) => {
+                Ok(response) => {
+                    let mut stream = response.stream;
                     if raw {
                         println!("[Stream start - raw]");
                         let mut stdout = io::stdout();

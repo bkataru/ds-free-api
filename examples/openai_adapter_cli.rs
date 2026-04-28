@@ -201,10 +201,10 @@ fn is_stream(body: &[u8]) -> bool {
 /// Dispatch a `/v1/chat/completions` body; `--raw` controls printing
 async fn run_chat(adapter: &OpenAIAdapter, body: &[u8], raw: bool) -> anyhow::Result<()> {
     if is_stream(body) {
-        let mut stream = adapter.chat_completions_stream(body).await?;
+        let mut stream = adapter.chat_completions_stream(body, "openai-adapter-cli").await?.data;
         print_stream(&mut stream, raw).await;
     } else {
-        let json = adapter.chat_completions(body).await?;
+        let json = adapter.chat_completions(body, "openai-adapter-cli").await?.data;
         if raw {
             println!("{}", String::from_utf8_lossy(&json));
         } else {
@@ -355,8 +355,9 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: St
             async move {
                 let req_start = std::time::Instant::now();
                 let result = if is_streaming {
-                    match adapter.chat_completions_stream(&body).await {
-                        Ok(mut stream) => {
+                    match adapter.chat_completions_stream(&body, "openai-adapter-cli").await {
+                        Ok(response) => {
+                            let mut stream = response.data;
                             let mut output = String::new();
                             let mut ok = true;
                             while let Some(chunk) = stream.next().await {
@@ -410,8 +411,9 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: St
                         }
                     }
                 } else {
-                    match adapter.chat_completions(&body).await {
-                        Ok(json) => {
+                    match adapter.chat_completions(&body, "openai-adapter-cli").await {
+                        Ok(response) => {
+                            let json = response.data;
                             let output = if raw {
                                 String::from_utf8_lossy(&json).to_string()
                             } else {

@@ -20,4 +20,3 @@ def test_invalid_token(client):
         )
 
     assert exc_info.value.status_code == 401
-1ch|
