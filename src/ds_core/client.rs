@@ -20,6 +20,7 @@ const ENDPOINT_CHAT_SESSION_DELETE: &str = "/chat_session/delete";
 const ENDPOINT_CHAT_SESSION_UPDATE_TITLE: &str = "/chat_session/update_title";
 const ENDPOINT_CHAT_CREATE_POW_CHALLENGE: &str = "/chat/create_pow_challenge";
 const ENDPOINT_CHAT_COMPLETION: &str = "/chat/completion";
+#[allow(dead_code)]
 const ENDPOINT_CHAT_EDIT_MESSAGE: &str = "/chat/edit_message";
 const ENDPOINT_CHAT_STOP_STREAM: &str = "/chat/stop_stream";
 #[allow(dead_code)]
@@ -192,6 +193,7 @@ pub struct CompletionPayload {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)]
 pub struct EditMessagePayload {
     pub chat_session_id: String,
     pub message_id: i64,
@@ -379,6 +381,7 @@ impl DsClient {
         Ok(Box::pin(resp.bytes_stream().map_err(ClientError::Http)))
     }
 
+    #[allow(dead_code)]
     pub async fn edit_message(
         &self,
         token: &str,

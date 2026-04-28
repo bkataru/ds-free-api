@@ -14,6 +14,9 @@ pub fn build(req: &ChatCompletionRequest, tool_ctx: &ToolContext) -> String {
     let mut parts: Vec<String> = req.messages.iter().map(format_message).collect();
 
     let mut extra_blocks: Vec<String> = Vec::new();
+    if let Some(text) = tool_ctx.format_block.as_deref() {
+        extra_blocks.push(text.to_string());
+    }
     if let Some(text) = tool_ctx.defs_text.as_deref() {
         extra_blocks.push(text.to_string());
     }
@@ -106,7 +109,9 @@ fn format_assistant(msg: &Message) -> String {
             })
             .collect();
         parts.push(format!(
-            "<tool_calls>\n[{}]\n</tool_calls>",
+            "<tool_call>
+[{}]
+</tool_call>",
             items.join(", ")
         ));
     }
@@ -118,7 +123,9 @@ fn format_assistant(msg: &Message) -> String {
             serde_json::to_string(&fc.name).unwrap_or_else(|_| "\"\"".into()),
             serde_json::to_string(&args).unwrap_or_else(|_| "null".into()),
         );
-        parts.push(format!("<tool_calls>\n[{item}]\n</tool_calls>"));
+        parts.push(format!("<tool_call>
+[{item}]
+</tool_call>"));
     }
     if let Some(refusal) = &msg.refusal {
         parts.push(format!("(refusal: {refusal})"));

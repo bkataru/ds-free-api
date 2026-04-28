@@ -8,7 +8,7 @@ mod completions;
 mod pow;
 
 pub use accounts::AccountStatus;
-pub use completions::{ChatRequest, ChatResponse};
+pub use completions::{ChatRequest, ChatResponse, FilePayload};
 
 use crate::config::Config;
 use accounts::AccountPool;

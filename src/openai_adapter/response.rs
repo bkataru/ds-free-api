@@ -9,6 +9,8 @@ mod sse_parser;
 mod state;
 mod tool_parser;
 
+pub(crate) use tool_parser::TOOL_CALL_END;
+pub(crate) use tool_parser::TOOL_CALL_START;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -95,7 +97,7 @@ pub type RepairFn = Arc<
 >;
 
 /// Execute a repair: consume ds_core byte stream, extract text from ContentDelta frames,
-/// wrap in <tool_calls> if missing, parse to Vec<ToolCall>.
+/// wrap in <tool_call> if missing, parse to Vec<ToolCall>.
 pub(crate) async fn execute_tool_repair(
     ds_stream: Pin<Box<dyn Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send>>,
 ) -> Result<Vec<ToolCall>, OpenAIAdapterError> {
@@ -115,10 +117,10 @@ pub(crate) async fn execute_tool_repair(
         }
     }
 
-    let wrapped = if text.contains("<tool_calls>") {
+    let wrapped = if text.contains(TOOL_CALL_START) {
         text.trim().to_string()
     } else {
-        format!("<tool_calls>{}</tool_calls>", text.trim())
+        format!("{}{}{}", TOOL_CALL_START, text.trim(), TOOL_CALL_END)
     };
 
     let (calls, _) = tool_parser::parse_tool_calls(&wrapped).ok_or_else(|| {
@@ -567,7 +569,7 @@ mod tests {
     async fn aggregate_tool_calls() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_call>\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
@@ -592,7 +594,7 @@ mod tests {
     async fn aggregate_tool_calls_with_trailing_text() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {}}]</tool_calls> trailing text\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {}}]</tool_call> trailing text\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
@@ -722,7 +724,7 @@ mod tests {
     async fn stream_tool_calls() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -749,13 +751,13 @@ mod tests {
             .iter()
             .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
         assert!(has_tool_calls, "should have a tool_calls chunk");
-        // Assistant text must not leak raw `<tool_calls>` markup.
+        // Assistant text must not leak raw `<tool_call>` markup.
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert!(
-            !all_content.contains("<tool_calls>"),
+            !all_content.contains("<tool_call>"),
             "content should not contain tool_calls tags"
         );
         // finish
@@ -770,9 +772,9 @@ mod tests {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"Thinking...\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"get_\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"Beijing\\\"}}]\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -941,7 +943,7 @@ mod tests {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, I will help you.\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_call>\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
         let json = aggregate(stream, "deepseek-default".into(), vec![], 0, false)
@@ -967,12 +969,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_leading_text_fragmented() {
-            // Scenario: leading natural language + chunked `<tool_calls>` JSON
+            // Scenario: leading natural language + chunked `<tool_call>` JSON
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, I will help you generate the image.\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<too\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"l_calls>[{\\\"name\\\": \\\"astrbot_execute_shell\\\", \\\"arguments\\\": {\\\"command\\\": \\\"cat /data/astrbot/skills/doubao-image-gen/SKILL.md\\\"}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"l_call>[{\\\"name\\\": \\\"astrbot_execute_shell\\\", \\\"arguments\\\": {\\\"command\\\": \\\"cat /data/astrbot/skills/doubao-image-gen/SKILL.md\\\"}}]</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -1027,16 +1029,16 @@ mod tests {
     async fn stream_tool_calls_with_leading_text_multi_chunk_fragments() {
         // Heavier fragmentation splits JSON across deltas.
         // chunk 1: leading text
-        // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}
+        // chunk 2: <tool_call>[{"name": "f", "arguments": {}}
         // chunk 3: ]
-        // chunk 4: </tool_calls>
+        // chunk 4: </tool_call>
         // chunk 5: FINISHED status
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Let me look it up.\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -1077,15 +1079,15 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_thinking_then_leading_text_then_fragmented_json() {
-            // Full production mix: THINK → leading content → fragmented `<tool_calls>`
+            // Full production mix: THINK → leading content → fragmented `<tool_call>`
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"User wants weather info, I need to call the tool\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, let me look it up\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"...\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"_call>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -1126,16 +1128,16 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_json_split_right_after_tag() {
-            // `<tool_calls>` opens early while JSON arguments finish in later deltas
+            // `<tool_call>` opens early while JSON arguments finish in later deltas
         // chunk 1: leading text
-        // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}]
-            // Third chunk may only carry the closing `</tool_calls>` sentinel
+        // chunk 2: <tool_call>[{"name": "f", "arguments": {}}]
+            // Third chunk may only carry the closing `</tool_call>` sentinel
         // chunk 4: FINISHED
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright.\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -1165,10 +1167,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_no_leading_text() {
-            // Common degenerate case — model jumps straight into `<tool_calls>`
+            // Common degenerate case — model jumps straight into `<tool_call>`
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_call>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_call>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);

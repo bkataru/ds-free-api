@@ -3,6 +3,7 @@
 //! `ds_core` does not expose native function calling; this adapter downgrades definitions to prose
 //! appended before the assistant block so models still emit structured `<tool_calls>` output.
 
+use crate::openai_adapter::response::{TOOL_CALL_END, TOOL_CALL_START};
 use crate::openai_adapter::types::{
     AllowedTools, AllowedToolsChoice, ChatCompletionRequest, CustomTool, CustomToolFormat,
     FunctionDefinition, Tool, ToolChoice,
@@ -10,6 +11,8 @@ use crate::openai_adapter::types::{
 
 /// Tool-related context lifted out of an OpenAI request.
 pub struct ToolContext {
+    /// Format template + rules + examples (before tool definitions)
+    pub format_block: Option<String>,
     /// Rendered tool catalog for the reminder block.
     pub defs_text: Option<String>,
     /// Extra behavioral lines derived from `tool_choice` / `parallel_tool_calls`.
@@ -36,6 +39,7 @@ pub fn extract(req: &ChatCompletionRequest) -> Result<ToolContext, String> {
     if matches!(tool_choice, ToolChoice::Mode(m) if m == "none") {
         return Ok(ToolContext {
             defs_text: None,
+            format_block: None,
             instruction_text: None,
         });
     }
@@ -70,24 +74,29 @@ pub fn extract(req: &ChatCompletionRequest) -> Result<ToolContext, String> {
         instruction_lines.push("You may only call a single tool invocation.".to_string());
     }
 
-    instruction_lines.push(
-        "When tools are required, respond using the format below with no extra prose:"
-            .to_string(),
-    );
-    instruction_lines.push("<tool_calls>".to_string());
-    instruction_lines.push(
-        "[{\"name\": \"<tool_name>\", \"arguments\": {<args-json>}}]".to_string(),
-    );
-    instruction_lines.push("</tool_calls>".to_string());
-    instruction_lines.push("Multiple tool calls can appear as multiple objects in the same array."
-        .to_string());
-    instruction_lines.push("Example:".to_string());
-    instruction_lines.push("<tool_calls>".to_string());
-    instruction_lines.push(
-        "[{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Beijing\"}}, {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Shanghai\"}}]"
-            .to_string(),
-    );
-    instruction_lines.push("</tool_calls>".to_string());
+    let format_block = if has_tools(req) {
+        let mut lines = vec![
+            "When tools are required, respond using the format below with no extra prose:"
+                .to_string(),
+        ];
+        lines.push(TOOL_CALL_START.to_string());
+        lines.push(
+            "[{\"name\": \"<tool_name>\", \"arguments\": {<args-json>}}]".to_string(),
+        );
+        lines.push(TOOL_CALL_END.to_string());
+        lines.push("Multiple tool calls can appear as multiple objects in the same array."
+            .to_string());
+        lines.push("Example:".to_string());
+        lines.push(TOOL_CALL_START.to_string());
+        lines.push(
+            "[{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Beijing\"}}, {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Shanghai\"}}]"
+                .to_string(),
+        );
+        lines.push(TOOL_CALL_END.to_string());
+        Some(lines.join("\n"))
+    } else {
+        None
+    };
 
     let defs_text = if has_tools(req) {
         let mut lines = vec!["You can use the following tools:".to_string()];
@@ -106,6 +115,7 @@ pub fn extract(req: &ChatCompletionRequest) -> Result<ToolContext, String> {
     };
 
     Ok(ToolContext {
+        format_block,
         defs_text,
         instruction_text,
     })

@@ -102,6 +102,7 @@ pub fn parse(
             thinking_enabled: model_res.thinking_enabled,
             search_enabled: model_res.search_enabled,
             model_type: model_res.model_type,
+            files: vec![],
         },
         stream: norm.stream,
         include_usage: norm.include_usage,
@@ -622,7 +623,7 @@ mod tests {
             "tool definitions must not trail immediately after user shards"
         );
         assert!(
-            prompt.contains("<|im_start|>reminder\nYou can use the following tools"),
+            prompt.contains("<|im_start|>reminder") && prompt.contains("You can use the following tools"),
             "tool catalogs must reside within reminder shards"
         );
         // Reminder scaffolding must precede the final `<|im_start|>assistant` sentinel
@@ -664,7 +665,7 @@ mod tests {
         let prompt = &req.ds_req.prompt;
         // Trailing tool messages still demand reminder scaffolding before assistants
         assert!(
-            prompt.contains("<|im_start|>reminder\nYou can use the following tools"),
+            prompt.contains("<|im_start|>reminder") && prompt.contains("You can use the following tools"),
             "tool catalogs must reside within reminder shards"
         );
         let reminder_pos = prompt.find("<|im_start|>reminder").unwrap();

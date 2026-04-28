@@ -1,8 +1,8 @@
-//! Tool-call sniffing layer — carve `<tool_calls>` XML blobs out of chunked assistant deltas.
+//! Tool-call sniffing layer — carve `<tool_call>` XML blobs out of chunked assistant deltas.
 //!
 //! Phases:
-//! - `Detecting`: maintain rolling UTF-8 text with slack `W` bigger than `<tool_calls>` so split packets never evict prefixes.
-//! - `CollectingXml`: buffer until balanced `</tool_calls>` markers (or forcibly unwind on overflows).
+//! - `Detecting`: maintain rolling UTF-8 text with slack `W` bigger than `<tool_call>` so split packets never evict prefixes.
+//! - `CollectingXml`: buffer until balanced `</tool_call>` markers (or forcibly unwind on overflows).
 //! - `Done`: after structured deltas emit once, choke trailing assistant spam to emulate OpenAI `tool_calls` chunks.
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,12 +21,12 @@ use crate::openai_adapter::types::{
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub(crate) const MAX_XML_BUF_LEN: usize = 64 * 1024;
 
-/// Sentinel `<tool_calls>` opener
-const TAG_START: &str = "<tool_calls>";
-/// Sentinel `</tool_calls>` terminator
-const TAG_END: &str = "</tool_calls>";
+/// Sentinel `<tool_call>` opener
+pub(crate) const TOOL_CALL_START: &str = "<tool_call>";
+/// Sentinel `</tool_call>` terminator
+pub(crate) const TOOL_CALL_END: &str = "</tool_call>";
 /// Byte-length of sentinel
-const TAG_LEN: usize = TAG_START.len(); // 12
+const TAG_LEN: usize = TOOL_CALL_START.len();
 /// Window width equals marker length plus slack budget so partial UTF-8 never drops tags.
 const W: usize = TAG_LEN + 7; // 19
 
@@ -48,7 +48,7 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
 }
 
 
-/// Detect whether `<tool_calls>` happens inside stray triple-backtick fenced samples.
+/// Detect whether `<tool_call>` happens inside stray triple-backtick fenced samples.
 fn is_inside_code_fence(xml: &str, tag_pos: usize) -> bool {
     let before = &xml[..tag_pos];
     before.matches("```").count() % 2 == 1
@@ -131,21 +131,21 @@ fn repair_json(s: &str) -> Option<String> {
     None
 }
 
-/// Parse bracketed arrays inside `<tool_calls>` wrappers into canonical `Vec<ToolCall>`.
+/// Parse bracketed arrays inside `<tool_call>` wrappers into canonical `Vec<ToolCall>`.
 ///
 /// Example payload:
-/// `<tool_calls>[{"name":"get_weather","arguments":{"city":"Beijing"}}]</tool_calls>`
+/// `<tool_call>[{"name":"get_weather","arguments":{"city":"Beijing"}}]</tool_call>`
 pub fn parse_tool_calls(xml: &str) -> Option<(Vec<ToolCall>, String)> {
-    let start = xml.find(TAG_START)?;
+    let start = xml.find(TOOL_CALL_START)?;
     // Markdown examples sometimes embed sentinel text — skip those.
     if is_inside_code_fence(xml, start) {
         return None;
     }
-    let after_start = start + TAG_START.len();
+    let after_start = start + TOOL_CALL_START.len();
 
     // Closing tag keeps hallucinated completions from leaking onward.
-    let (end, inner_end) = match xml.find(TAG_END) {
-        Some(pos) => (pos + TAG_END.len(), pos),
+    let (end, inner_end) = match xml.find(TOOL_CALL_END) {
+        Some(pos) => (pos + TOOL_CALL_END.len(), pos),
         None => (xml.len(), xml.len()),
     };
     let inner = &xml[after_start..inner_end];
@@ -232,7 +232,7 @@ fn make_end_chunk(model: &str, delta: Delta, finish_reason: &'static str) -> Cha
 enum ToolParseState {
     /// `Detecting` — rolling buffer heuristic.
     Detecting {
-        /// Persist tail slack for split `<tool_calls>` literals.
+        /// Persist tail slack for split `<tool_call>` literals.
         buffer: String,
     },
     /// Drain XML until terminator when marker seen.
@@ -305,19 +305,19 @@ where
                             ToolParseState::Detecting { buffer } => {
                                 buffer.push_str(&content);
 
-                                // Detect `<tool_calls>` substring inside slack buffer.
-                                if let Some(pos) = buffer.find(TAG_START) {
+                                // Detect `<tool_call>` substring inside slack buffer.
+                                if let Some(pos) = buffer.find(TOOL_CALL_START) {
                                     debug!(
                                         target: "adapter",
-                                        "tool_parser: <tool_calls> detected (buffer_len={})",
+                                        "tool_parser: <tool_call> detected (buffer_len={})",
                                         buffer.len()
                                     );
                                     let before = buffer[..pos].to_string();
                                     let rest = std::mem::take(buffer)[pos..].to_string();
 
-                                    // Determine whether `</tool_calls>` completes within this chunk.
-                                    if let Some(end_pos) = rest.find(TAG_END) {
-                                        let end_abs = end_pos + TAG_END.len();
+                                    // Determine whether `</tool_call>` completes within this chunk.
+                                    if let Some(end_pos) = rest.find(TOOL_CALL_END) {
+                                        let end_abs = end_pos + TOOL_CALL_END.len();
                                         let collected = &rest[..end_abs];
 
                                         if let Some((calls, _)) = parse_tool_calls(collected) {
@@ -388,8 +388,8 @@ where
                                     choice.delta.content = Some(flushed);
                                     return Poll::Ready(Some(Ok(chunk)));
                                 }
-                                if let Some(end_pos) = buf.find(TAG_END) {
-                                    let end_abs = end_pos + TAG_END.len();
+                                if let Some(end_pos) = buf.find(TOOL_CALL_END) {
+                                    let end_abs = end_pos + TOOL_CALL_END.len();
                                     let collected = buf[..end_abs].to_string();
                                     let _tail = buf.split_off(end_abs);
 
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn parse_json_tool_calls() {
         let xml =
-            r#"<tool_calls>[{"name": "get_weather", "arguments": {"city": "Beijing"}}]</tool_calls>"#;
+            r#"<tool_call>[{"name": "get_weather", "arguments": {"city": "Beijing"}}]</tool_call>"#;
         let (calls, remaining) = parse_tool_calls(xml).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(calls.len(), 1);
@@ -560,10 +560,10 @@ mod tests {
     #[test]
     fn parse_json_with_surrounding_text() {
         // Permit commentary before/after array bodies
-        let xml = r#"<tool_calls>
+        let xml = r#"<tool_call>
 The following is a tool call:
 [{"name": "f", "arguments": {}}]
-</tool_calls>"#;
+</tool_call>"#;
         let (calls, _remaining) = parse_tool_calls(xml).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.as_ref().unwrap().name, "f");
@@ -571,7 +571,7 @@ The following is a tool call:
 
     #[test]
     fn parse_json_multiple_tools() {
-        let xml = r#"<tool_calls>[{"name": "get_weather", "arguments": {}}, {"name": "get_time", "arguments": {"tz": "bj"}}]</tool_calls>"#;
+        let xml = r#"<tool_call>[{"name": "get_weather", "arguments": {}}, {"name": "get_time", "arguments": {"tz": "bj"}}]</tool_call>"#;
         let (calls, remaining) = parse_tool_calls(xml).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(calls.len(), 2);
@@ -584,7 +584,7 @@ The following is a tool call:
     #[test]
     fn parse_json_with_trailing_text() {
         let xml =
-            r#"<tool_calls>[{"name": "get_weather", "arguments": {}}]</tool_calls> trailing text"#;
+            r#"<tool_call>[{"name": "get_weather", "arguments": {}}]</tool_call> trailing text"#;
         let (calls, remaining) = parse_tool_calls(xml).unwrap();
         assert_eq!(remaining, " trailing text");
         assert_eq!(calls.len(), 1);
@@ -593,7 +593,7 @@ The following is a tool call:
 
     #[test]
     fn parse_tool_calls_single_object() {
-        let xml = r#"<tool_calls>{"name": "get_weather", "arguments": {"city": "New York"}}</tool_calls>"#;
+        let xml = r#"<tool_call>{"name": "get_weather", "arguments": {"city": "New York"}}</tool_call>"#;
         let (calls, _) = parse_tool_calls(xml).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.as_ref().unwrap().name, "get_weather");
@@ -601,7 +601,7 @@ The following is a tool call:
 
     #[test]
     fn parse_tool_calls_single_object_with_surrounding_text() {
-        let xml = r#"<tool_calls>here is the tool: {"name": "f", "arguments": {}}</tool_calls>"#;
+        let xml = r#"<tool_call>here is the tool: {"name": "f", "arguments": {}}</tool_call>"#;
         let (calls, remaining) = parse_tool_calls(xml).unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(remaining, "");

@@ -20,6 +20,7 @@ use log::{debug, info, warn};
 /// Per-session state: session id + next edit_message_id
 struct SessionInfo {
     id: String,
+    #[allow(dead_code)]
     next_message_id: i64,
 }
 
@@ -50,6 +51,7 @@ impl Account {
             .map(|s| s.id.clone())
     }
 
+    #[allow(dead_code)]
     pub fn next_message_id(&self, model_type: &str) -> i64 {
         self.sessions
             .read()
@@ -59,6 +61,7 @@ impl Account {
             .unwrap_or(1)
     }
 
+    #[allow(dead_code)]
     pub fn set_next_message_id(&self, model_type: &str, id: i64) {
         if let Some(s) = self.sessions.write().unwrap().get_mut(model_type) {
             s.next_message_id = id;

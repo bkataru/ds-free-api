@@ -186,6 +186,7 @@ impl OpenAIAdapter {
                     thinking_enabled: false,
                     search_enabled: false,
                     model_type: "default".to_string(),
+                    files: vec![],
                 };
                 let resp = core.v0_chat(req, &req_id).await.map_err(OpenAIAdapterError::from)?;
                 response::execute_tool_repair(resp.stream).await
