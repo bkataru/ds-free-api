@@ -19,6 +19,12 @@ mod types;
 /// Streamed response type (SSE bytes).
 pub type StreamResponse = Pin<Box<dyn Stream<Item = Result<Bytes, OpenAIAdapterError>> + Send>>;
 
+/// Adapter-layer generic result wrapper: carries request result and account identifier
+pub struct ChatResult<T> {
+    pub data: T,
+    pub account_id: String,
+}
+
 /// OpenAI-compatible adapter over `DeepSeekCore`.
 pub struct OpenAIAdapter {
     ds_core: Arc<DeepSeekCore>,
@@ -53,22 +59,32 @@ impl OpenAIAdapter {
     /// `POST /v1/chat/completions` (non-streaming).
     ///
     /// Reuses the streaming path internally and aggregates SSE into one JSON object.
-    pub async fn chat_completions(&self, body: &[u8]) -> Result<Vec<u8>, OpenAIAdapterError> {
+    pub async fn chat_completions(
+        &self,
+        body: &[u8],
+        request_id: &str,
+    ) -> Result<ChatResult<Vec<u8>>, OpenAIAdapterError> {
         let req = request::parse(body, &self.model_registry)?;
-        let stream = self.try_chat(req.ds_req).await?;
-        response::aggregate(stream, req.model, req.stop, req.prompt_tokens, req.tools_present).await
+        let chat_resp = self.try_chat(req.ds_req, request_id).await?;
+        let data =
+            response::aggregate(chat_resp.stream, req.model, req.stop, req.prompt_tokens, req.tools_present).await?;
+        Ok(ChatResult {
+            data,
+            account_id: chat_resp.account_id,
+        })
     }
 
     /// `POST /v1/chat/completions` (streaming).
     pub async fn chat_completions_stream(
         &self,
         body: &[u8],
-    ) -> Result<StreamResponse, OpenAIAdapterError> {
+        request_id: &str,
+    ) -> Result<ChatResult<StreamResponse>, OpenAIAdapterError> {
         let req = request::parse(body, &self.model_registry)?;
-        let stream = self.try_chat(req.ds_req).await?;
-        let repair_fn = self.create_repair_fn();
-        Ok(response::stream(
-            stream,
+        let chat_resp = self.try_chat(req.ds_req, request_id).await?;
+        let repair_fn = self.create_repair_fn(request_id);
+        let data = response::stream(
+            chat_resp.stream,
             req.model,
             req.include_usage,
             req.include_obfuscation,
@@ -76,22 +92,28 @@ impl OpenAIAdapter {
             req.prompt_tokens,
             req.tools_present,
             Some(repair_fn),
-        ))
+        );
+        Ok(ChatResult {
+            data,
+            account_id: chat_resp.account_id,
+        })
     }
 
     /// Internal helper: short delayed retries on `Overloaded` to smooth burst traffic.
     pub(crate) async fn try_chat(
         &self,
         req: crate::ds_core::ChatRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<Bytes, CoreError>> + Send>>, CoreError> {
-        const MAX_RETRIES: usize = 3;
-        const RETRY_DELAY_MS: u64 = 200;
+        request_id: &str,
+    ) -> Result<crate::ds_core::ChatResponse, CoreError> {
+        const MAX_RETRIES: usize = 6;
+        const BASE_DELAY_MS: u64 = 1000;
 
         for attempt in 0..MAX_RETRIES {
-            match self.ds_core.v0_chat(req.clone()).await {
-                Ok(stream) => return Ok(Box::pin(stream)),
+            match self.ds_core.v0_chat(req.clone(), request_id).await {
+                Ok(resp) => return Ok(resp),
                 Err(CoreError::Overloaded) if attempt + 1 < MAX_RETRIES => {
-                    tokio::time::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+                    let delay = BASE_DELAY_MS * (1 << attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 }
                 Err(e) => return Err(e),
             }
@@ -131,11 +153,13 @@ impl OpenAIAdapter {
     /// Builds the repair closure for tool_calls self-repair.
     /// The closure captures Arc<DeepSeekCore> and calls a repair model to fix
     /// malformed XML tool calls from the primary model.
-    pub(crate) fn create_repair_fn(&self) -> response::RepairFn {
+    pub(crate) fn create_repair_fn(&self, request_id: &str) -> response::RepairFn {
         use std::sync::Arc;
         let core = self.ds_core.clone();
+        let req_id = request_id.to_string();
         Arc::new(move |raw_xml: String| {
             let core = core.clone();
+            let req_id = req_id.clone();
             Box::pin(async move {
                 use crate::ds_core::ChatRequest;
                 let prompt = format!(
@@ -151,8 +175,8 @@ impl OpenAIAdapter {
                     search_enabled: false,
                     model_type: "default".to_string(),
                 };
-                let stream = core.v0_chat(req).await.map_err(OpenAIAdapterError::from)?;
-                response::execute_tool_repair(stream).await
+                let resp = core.v0_chat(req, &req_id).await.map_err(OpenAIAdapterError::from)?;
+                response::execute_tool_repair(resp.stream).await
             })
         })
     }

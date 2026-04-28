@@ -17,7 +17,7 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use log::{debug, error};
+use log::{debug, info, trace, warn};
 use pin_project_lite::pin_project;
 use rand::RngExt;
 
@@ -179,7 +179,8 @@ where
                         Poll::Ready(Some(Err(e))) => {
                             let e = e.into();
                             if let OpenAIAdapterError::ToolCallRepairNeeded(raw_xml) = e {
-                                debug!(target: "adapter", "RepairStream catching repair signal");
+                                warn!(target: "adapter", "RepairStream 捕获修复请求: len={}", raw_xml.len());
+                                trace!(target: "adapter", ">>> repair: accepting raw_xml len={}", raw_xml.len());
                                 let repair_fn = this.repair_fn.clone();
                                 let future = (repair_fn)(raw_xml);
                                 *this.state = RepairState::Repairing { future };
@@ -197,14 +198,15 @@ where
                 RepairState::Repairing { future } => {
                     match future.as_mut().poll(cx) {
                         Poll::Ready(Ok(calls)) => {
-                            debug!(target: "adapter", "RepairStream repair succeeded with {} calls", calls.len());
+                            info!(target: "adapter", "tool_calls 修复成功: {} 个工具调用", calls.len());
+                            trace!(target: "adapter", ">>> repair: success {} calls", calls.len());
                             // Emit repair result as tool_calls chunk then resume forwarding
                             let chunk = make_repair_chunk(calls);
                             *this.state = RepairState::Forwarding;
                             return Poll::Ready(Some(Ok(chunk)));
                         }
                         Poll::Ready(Err(e)) => {
-                            error!(target: "adapter", "RepairStream repair failed: {}", e);
+                            warn!(target: "adapter", "tool_calls 修复失败: {}", e);
                             *this.state = RepairState::RepairFailed(e.to_string());
                             continue;
                         }
@@ -304,6 +306,7 @@ where
                     {
                         this.buffer.push_str(content);
                         if let Some(pos) = find_stop_pos(this.buffer, this.stop) {
+                            trace!(target: "adapter", ">>> stop: truncate at {}", pos);
                             let truncated = &this.buffer[*this.sent_len..pos];
                             if truncated.is_empty() {
                                 choice.delta.content = None;

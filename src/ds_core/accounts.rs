@@ -66,6 +66,14 @@ impl Account {
     pub fn is_busy(&self) -> bool {
         self.is_busy.load(Ordering::Relaxed)
     }
+
+    pub fn display_id(&self) -> &str {
+        if !self.email.is_empty() {
+            &self.email
+        } else {
+            &self.mobile
+        }
+    }
 }
 
 /// Marks the account busy for the guard's lifetime; released on `Drop`.

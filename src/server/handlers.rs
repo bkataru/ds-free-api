@@ -10,6 +10,7 @@ use axum::{
 };
 use bytes::Bytes;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::anthropic_compat::{AnthropicCompat, AnthropicCompatError};
 use crate::openai_adapter::request::AdapterRequest;
@@ -17,6 +18,14 @@ use crate::openai_adapter::{OpenAIAdapter, OpenAIAdapterError, StreamResponse};
 
 use super::error::ServerError;
 use super::stream::SseBody;
+
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn next_request_id() -> String {
+    format!("req-{}", REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+const X_DS_ACCOUNT: &str = "x-ds-account";
 
 /// Shared application state
 #[derive(Clone)]
@@ -30,44 +39,56 @@ pub(crate) async fn chat_completions(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<Response, ServerError> {
+    let request_id = next_request_id();
     let req = state.adapter.parse_request(&body)?;
     log::debug!(
         target: "http::request",
-        "POST /v1/chat/completions stream={}",
-        req.stream
+        "req={} POST /v1/chat/completions stream={}",
+        request_id, req.stream
     );
 
-    match handle_chat(&state.adapter, req).await {
-        Ok(ChatResult::Stream(stream)) => {
-            log::debug!(target: "http::response", "200 SSE stream started");
-            Ok(SseBody::new(stream).into_response())
+    match handle_chat(&state.adapter, req, &request_id).await {
+        Ok(ChatHandlerResult::Stream { stream, account_id }) => {
+            log::debug!(target: "http::response", "req={} 200 SSE stream started", request_id);
+            Ok(SseBody::new(stream)
+                .with_header(X_DS_ACCOUNT, &account_id)
+                .into_response())
         }
-        Ok(ChatResult::Json(json)) => {
+        Ok(ChatHandlerResult::Json { json, account_id }) => {
             log::debug!(
                 target: "http::response",
-                "200 JSON response {} bytes",
-                json.len()
+                "req={} 200 JSON response {} bytes",
+                request_id, json.len()
             );
-            Ok((
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/json")],
-                Body::from(json),
-            )
+            let body = Body::from(json);
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(X_DS_ACCOUNT, &account_id)
+                .body(body)
+                .unwrap()
                 .into_response())
         }
         Err(e) => Err(e.into()),
     }
 }
 
-enum ChatResult {
-    Stream(StreamResponse),
-    Json(Vec<u8>),
+enum ChatHandlerResult {
+    Stream {
+        stream: StreamResponse,
+        account_id: String,
+    },
+    Json {
+        json: Vec<u8>,
+        account_id: String,
+    },
 }
 
 async fn handle_chat(
     adapter: &OpenAIAdapter,
     req: AdapterRequest,
-) -> Result<ChatResult, OpenAIAdapterError> {
+    request_id: &str,
+) -> Result<ChatHandlerResult, OpenAIAdapterError> {
     let model = req.model.clone();
     let stop = req.stop.clone();
     let stream = req.stream;
@@ -76,30 +97,32 @@ async fn handle_chat(
     let prompt_tokens = req.prompt_tokens;
     let tools_present = req.tools_present;
 
-    let ds_stream = adapter.try_chat(req.ds_req).await?;
+    let chat_resp = adapter.try_chat(req.ds_req, request_id).await?;
+    let account_id = chat_resp.account_id;
 
     if stream {
-        log::debug!(target: "http::response", "200 SSE stream started");
-        Ok(ChatResult::Stream(crate::openai_adapter::response::stream(
-            ds_stream,
+        let repair_fn = adapter.create_repair_fn(request_id);
+        let stream = crate::openai_adapter::response::stream(
+            chat_resp.stream,
             model,
             include_usage,
             include_obfuscation,
             stop,
             prompt_tokens,
             tools_present,
-            Some(adapter.create_repair_fn()),
-        )))
-    } else {
-        let json =
-            crate::openai_adapter::response::aggregate(ds_stream, model, stop, prompt_tokens, tools_present)
-                .await?;
-        log::debug!(
-            target: "http::response",
-            "200 JSON response {} bytes",
-            json.len()
+            Some(repair_fn),
         );
-        Ok(ChatResult::Json(json))
+        Ok(ChatHandlerResult::Stream { stream, account_id })
+    } else {
+        let json = crate::openai_adapter::response::aggregate(
+            chat_resp.stream,
+            model,
+            stop,
+            prompt_tokens,
+            tools_present,
+        )
+        .await?;
+        Ok(ChatHandlerResult::Json { json, account_id })
     }
 }
 
@@ -154,10 +177,11 @@ pub(crate) async fn anthropic_messages(
     State(state): State<AppState>,
     body: Bytes,
 ) -> Result<Response, ServerError> {
+    let request_id = next_request_id();
     log::debug!(
         target: "http::request",
-        "Anthropic request body: {}",
-        String::from_utf8_lossy(&body)
+        "req={} anthropic body: {}",
+        request_id, String::from_utf8_lossy(&body)
     );
     // Peek `stream` first to choose streaming vs non-streaming
     let stream = serde_json::from_slice::<crate::anthropic_compat::request::MessagesRequest>(&body)
@@ -166,26 +190,38 @@ pub(crate) async fn anthropic_messages(
 
     log::debug!(
         target: "http::request",
-        "POST /anthropic/v1/messages stream={}",
-        stream
+        "req={} POST /anthropic/v1/messages stream={}",
+        request_id, stream
     );
 
     if stream {
-        let anthropic_stream = state.anthropic_compat.messages_stream(&body).await?;
-        log::debug!(target: "http::response", "200 SSE stream started");
-        Ok(SseBody::new(anthropic_stream).into_response())
+        let result = state
+            .anthropic_compat
+            .messages_stream(&body, &request_id)
+            .await
+            .map_err(AnthropicCompatError::from)?;
+        log::debug!(target: "http::response", "req={} 200 SSE stream started", request_id);
+        Ok(SseBody::new(result.data)
+            .with_header(X_DS_ACCOUNT, &result.account_id)
+            .into_response())
     } else {
-        let json = state.anthropic_compat.messages(&body).await?;
+        let result = state
+            .anthropic_compat
+            .messages(&body, &request_id)
+            .await
+            .map_err(AnthropicCompatError::from)?;
         log::debug!(
             target: "http::response",
-            "200 JSON response {} bytes",
-            json.len()
+            "req={} 200 JSON response {} bytes",
+            request_id, result.data.len()
         );
-        Ok((
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/json")],
-            Body::from(json),
-        )
+        let body = Body::from(result.data);
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(X_DS_ACCOUNT, &result.account_id)
+            .body(body)
+            .unwrap()
             .into_response())
     }
 }

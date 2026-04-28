@@ -8,9 +8,7 @@ mod completions;
 mod pow;
 
 pub use accounts::AccountStatus;
-pub use completions::ChatRequest;
-
-use std::pin::Pin;
+pub use completions::{ChatRequest, ChatResponse};
 
 use crate::config::Config;
 use accounts::AccountPool;
@@ -84,17 +82,15 @@ impl DeepSeekCore {
         Ok(Self { completions })
     }
 
-    /// Start a chat request; returns a raw SSE byte stream.
+    /// Start a chat request; returns SSE byte stream + account identifier.
     ///
     /// The leased account is released when the stream ends or is dropped.
     pub async fn v0_chat(
         &self,
         req: ChatRequest,
-    ) -> Result<
-        Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, CoreError>> + Send>>,
-        CoreError,
-    > {
-        self.completions.v0_chat(req).await
+        request_id: &str,
+    ) -> Result<ChatResponse, CoreError> {
+        self.completions.v0_chat(req, request_id).await
     }
 
     pub fn account_statuses(&self) -> Vec<AccountStatus> {
