@@ -5,7 +5,7 @@
 //! Public surface is intentionally small: `OpenAIAdapter`, `OpenAIAdapterError`.
 
 use bytes::Bytes;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -119,6 +119,18 @@ impl OpenAIAdapter {
             }
         }
         Err(CoreError::Overloaded)
+    }
+
+    /// Raw DeepSeek SSE stream (no OpenAI-protocol conversion).
+    ///
+    /// Useful for stream analysis: comparing raw responses against OpenAI-converted
+    /// output to pinpoint transformation bugs.
+    pub async fn raw_chat_stream(&self, body: &[u8]) -> Result<StreamResponse, OpenAIAdapterError> {
+        let req = request::parse(body, &self.model_registry)?;
+        let resp = self.try_chat(req.ds_req, "raw").await?;
+        Ok(Box::pin(
+            resp.stream.map(|r| r.map_err(OpenAIAdapterError::from)),
+        ))
     }
 
     /// `GET /v1/models`
