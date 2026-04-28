@@ -40,9 +40,13 @@ Forked from **[llm-router/ds-free-api](https://github.com/NIyueeE/ds-free-api)**
 
 ## This fork
 
-- **`tools_present` compatibility** — Aligns streamed tool deltas with consumers that infer presence from SSE chunks rather than relying on a lone final envelope.
+- **`tools_present` compatibility** — Aligns streamed tool deltas with consumers that infer presence from SSE chunks.
 - **Reasoning merge** — Concatenates thought traces and assistant content without breaking clients that gate on canonical message ordering.
-- **Anthropic compat layer** — First-class `/anthropic/v1/messages` mapping (bidirectional with the OpenAI pipeline) so Claude-shaped SDKs work without a second proxy.
+- **Anthropic compat layer** — First-class `/anthropic/v1/messages` mapping so Claude-shaped SDKs work without a second proxy.
+- **Tool-call self-repair** — Catches malformed XML tool calls and re-invokes the model to fix them, increasing tool-calling reliability.
+- **Temp session lifecycle** — Per-request create → file upload → PoW → completion → delete, avoiding session leaks.
+- **Keepalive stream** — Injects SSE keepalive comments on 1700ms idle to prevent connection timeouts.
+- **JSON root endpoint** — `GET /` returns available endpoint URLs and project metadata (no auth required).
 
 ## Quick start
 
@@ -112,7 +116,7 @@ Need more throughput? Spin up extra accounts via disposable inboxes (not all dom
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Health check |
+| GET | `/` | Root (available endpoints + repo) |
 | POST | `/v1/chat/completions` | Chat completions (streaming + tools) |
 | GET | `/v1/models` | Models list |
 | GET | `/v1/models/{id}` | Model metadata |
