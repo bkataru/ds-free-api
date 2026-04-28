@@ -1,3 +1,4 @@
+pub mod account_provisioning;
 pub mod anthropic_compat;
 pub mod config;
 pub mod ds_core;

@@ -28,6 +28,19 @@ mobile = "1234567890"
 area_code = "+1"
 password = "pass3"
 
+
+[account_provisioning]
+# Optional temporary inbox provisioning. Disabled by default.
+# This prepares disposable inboxes and stores provider credentials in the state file;
+# DeepSeek signup automation is intentionally a separate integration step.
+# enabled = false
+# provider = "mail_tm"
+# max_inboxes_per_run = 1
+# password_length = 24
+# poll_interval_ms = 5000
+# poll_timeout_secs = 180
+# state_path = "tmp/provisioned-inboxes.json"
+
 [deepseek]
 # Known-good User-Agent
 # user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"

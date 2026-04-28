@@ -3,7 +3,7 @@
 //! Supports `-c <path>` CLI arguments; defaults are documented on the helpers below.
 //! Commented-out keys in `config.toml` fall back to these code defaults.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Root application configuration
@@ -14,6 +14,9 @@ pub struct Config {
     /// DeepSeek-related settings
     #[serde(default)]
     pub deepseek: DeepSeekConfig,
+    /// Optional temporary email provisioning settings
+    #[serde(default)]
+    pub account_provisioning: AccountProvisioningConfig,
     /// HTTP server settings (required)
     pub server: ServerConfig,
 }
@@ -29,6 +32,80 @@ pub struct Account {
     pub area_code: String,
     /// Password
     pub password: String,
+}
+
+
+/// Optional disposable inbox provisioning for account setup workflows.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AccountProvisioningConfig {
+    /// Enable inbox provisioning on startup.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Provider backend. Currently `mail_tm` is implemented.
+    #[serde(default)]
+    pub provider: EmailProviderKind,
+    /// Maximum inboxes to create per process start.
+    #[serde(default = "default_provisioning_max_inboxes")]
+    pub max_inboxes_per_run: u32,
+    /// Generated mailbox password length.
+    #[serde(default = "default_provisioning_password_length")]
+    pub password_length: usize,
+    /// Inbox polling interval for verification-code helpers.
+    #[serde(default = "default_provisioning_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    /// Inbox polling timeout for verification-code helpers.
+    #[serde(default = "default_provisioning_poll_timeout_secs")]
+    pub poll_timeout_secs: u64,
+    /// JSON state file for provisioned inbox credentials.
+    #[serde(default = "default_provisioning_state_path")]
+    pub state_path: String,
+}
+
+impl Default for AccountProvisioningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: EmailProviderKind::default(),
+            max_inboxes_per_run: default_provisioning_max_inboxes(),
+            password_length: default_provisioning_password_length(),
+            poll_interval_ms: default_provisioning_poll_interval_ms(),
+            poll_timeout_secs: default_provisioning_poll_timeout_secs(),
+            state_path: default_provisioning_state_path(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailProviderKind {
+    MailTm,
+}
+
+impl Default for EmailProviderKind {
+    fn default() -> Self {
+        Self::MailTm
+    }
+}
+
+
+fn default_provisioning_max_inboxes() -> u32 {
+    1
+}
+
+fn default_provisioning_password_length() -> usize {
+    24
+}
+
+fn default_provisioning_poll_interval_ms() -> u64 {
+    5_000
+}
+
+fn default_provisioning_poll_timeout_secs() -> u64 {
+    180
+}
+
+fn default_provisioning_state_path() -> String {
+    "tmp/provisioned-inboxes.json".to_string()
 }
 
 /// DeepSeek client configuration
@@ -206,6 +283,28 @@ impl Config {
                 self.deepseek.max_output_tokens.len(),
                 n
             )));
+        }
+        if self.account_provisioning.enabled {
+            if self.account_provisioning.max_inboxes_per_run == 0 {
+                return Err(ConfigError::Validation(
+                    "account_provisioning.max_inboxes_per_run must be greater than zero when enabled".to_string(),
+                ));
+            }
+            if self.account_provisioning.max_inboxes_per_run > 10 {
+                return Err(ConfigError::Validation(
+                    "account_provisioning.max_inboxes_per_run cannot exceed 10".to_string(),
+                ));
+            }
+            if self.account_provisioning.password_length < 12 {
+                return Err(ConfigError::Validation(
+                    "account_provisioning.password_length must be at least 12".to_string(),
+                ));
+            }
+            if self.account_provisioning.poll_interval_ms == 0 {
+                return Err(ConfigError::Validation(
+                    "account_provisioning.poll_interval_ms must be greater than zero".to_string(),
+                ));
+            }
         }
         Ok(())
     }
