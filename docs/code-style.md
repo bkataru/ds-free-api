@@ -1,68 +1,71 @@
-# 代码风格规范
+# Code style
 
-## 注释风格
+## Comments
 
-### 模块文档（//!）
-- 第一行：模块职责 —— 具体描述
-- 空行后：关键设计决策或限制
+### Module docs (`//!`)
+
+- First line: what the module owns — concrete responsibility
+- After a blank line: key design decisions or constraints
 
 ```rust
-//! 账号池管理 —— 多账号负载均衡
+//! Account pool — multi-account load balancing
 //!
 //! 1 account = 1 session = 1 concurrency
 ```
 
-### 公有 API 文档（///）
-- 使用动词开头："返回"、"创建"、"发送"
-- 明确副作用："自动释放"、"清理 session"
-- 标注 Panic 条件（如有）
+### Public API docs (`///`)
+
+- Lead with a verb: "Returns", "Creates", "Sends"
+- Call out side effects: "automatically releases", "cleans up session"
+- Document panic preconditions when they exist
 
 ```rust
-/// 轮询获取一个空闲账号
+/// Poll until an idle account is available
 ///
-/// 返回的 AccountGuard 在 Drop 时自动释放 busy 标记
+/// Returned `AccountGuard` clears the busy flag on drop
 pub fn get_account(&self) -> Option<AccountGuard>
 ```
 
-### 行内注释（//）
-- 解释"为什么"而非"做什么"
-- 标注临时方案或外部依赖
+### Line comments (`//`)
+
+- Explain why, not what
+- Flag workarounds and external quirks
 
 ```rust
-// 顺序很重要：health_check 必须在 update_title 之前，
-// 否则空 session 会导致 EMPTY_CHAT_SESSION 错误
+// Order matters: health_check must run before update_title,
+// or an empty session triggers EMPTY_CHAT_SESSION
 ```
 
-## 命名规范
+## Naming
 
-| 类型 | 风格 | 示例 |
-|------|------|------|
-| 模块/文件 | snake_case | `ds_core`, `accounts.rs` |
-| 类型/结构体 | PascalCase | `AccountPool`, `CoreError` |
-| 函数/方法 | snake_case | `get_account()`, `compute_pow()` |
-| 常量 | SCREAMING_SNAKE_CASE | `ENDPOINT_USERS_LOGIN` |
-| 枚举变体 | PascalCase | `AllAccountsFailed` |
+| Kind | Style | Example |
+|------|-------|---------|
+| Module / file | snake_case | `ds_core`, `accounts.rs` |
+| Type / struct | PascalCase | `AccountPool`, `CoreError` |
+| Function / method | snake_case | `get_account()`, `compute_pow()` |
+| Constant | SCREAMING_SNAKE_CASE | `ENDPOINT_USERS_LOGIN` |
+| Enum variant | PascalCase | `AllAccountsFailed` |
 
-## 错误消息
+## Error messages
 
-- 中文错误消息（面向用户）
-- 包含上下文："账号 {} 初始化失败"
-- 避免泄露敏感信息（token 只打印前8位）
+- End-user wording in English
+- Include context, e.g. `account {} failed to initialize`
+- Never leak secrets (log at most the first 8 characters of a token)
 
-## 日志规范
+## Logging
 
-见 `docs/logging.md`
+See `docs/logging-spec.md`
 
-## 导入分组
+## Imports
 
-1. 标准库 (`std::`)
-2. 第三方库 (`tokio::`, `reqwest::`)
-3. 内部模块 (`crate::`)
-4. 本地 use (super, self)
+1. Standard library (`std::`)
+2. Third party (`tokio::`, `reqwest::`)
+3. Crate internals (`crate::`)
+4. Local `use` (`super`, `self`)
 
-组间空行分隔。
+Blank line between groups.
 
-## 测试代码规范
+## Tests
 
-- 测试函数内部允许使用 `println!` 输出中间结果，便于失败时观测解析内容
-- 库代码（`src/` 非 `#[cfg(test)]` 区域）仍禁止直接使用 `println!` / `eprintln!`
+- `println!` is allowed inside tests to inspect parse output when a case fails
+- Library code under `src/` outside `#[cfg(test)]` must not use `println!` / `eprintln!`

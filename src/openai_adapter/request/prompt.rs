@@ -1,7 +1,7 @@
-//! Prompt 构建 —— 将 OpenAI messages 转换为 ChatML 格式字符串
+//! Prompt assembly — map OpenAI `messages` into a ChatML-shaped string.
 //!
-//! 若请求包含工具定义或行为指令，会以独立的 `<|im_start|>reminder` 块
-//! 插入到 `<|im_start|>assistant` 之前，确保工具上下文始终紧邻模型生成位置。
+//! When tools or behavioral constraints are present, they are appended as a standalone
+//! `<|im_start|>reminder` block inserted immediately before `<|im_start|>assistant` so tool context stays next to the generation boundary.
 
 use super::tools::ToolContext;
 use crate::openai_adapter::types::{ChatCompletionRequest, ContentPart, Message, MessageContent};
@@ -9,7 +9,7 @@ use crate::openai_adapter::types::{ChatCompletionRequest, ContentPart, Message, 
 const IM_START: &str = "<|im_start|>";
 const IM_END: &str = "<|im_end|>";
 
-/// 构建 ChatML 格式的 prompt 字符串
+/// Build the ChatML-shaped prompt string consumed by `ds_core`.
 pub fn build(req: &ChatCompletionRequest, tool_ctx: &ToolContext) -> String {
     let mut parts: Vec<String> = req.messages.iter().map(format_message).collect();
 
@@ -21,11 +21,14 @@ pub fn build(req: &ChatCompletionRequest, tool_ctx: &ToolContext) -> String {
         extra_blocks.push(text.to_string());
     }
 
-    // response_format 降级：将格式约束注入到 reminder 块中
+    // Down-level `response_format`: fold constraints into the reminder block.
     if let Some(rf) = &req.response_format {
         match rf.ty.as_str() {
             "json_object" => {
-                extra_blocks.push("请直接输出合法的 JSON 对象，不要包含任何 markdown 代码块标记或其他解释性文字。".to_string());
+                extra_blocks.push(
+                    "Return a single valid JSON object only — no markdown fences or extra prose."
+                        .to_string(),
+                );
             }
             "json_schema" => {
                 let schema_text = rf
@@ -35,18 +38,19 @@ pub fn build(req: &ChatCompletionRequest, tool_ctx: &ToolContext) -> String {
                     .unwrap_or_default();
                 if schema_text.is_empty() {
                     extra_blocks.push(
-                        "请严格遵循 JSON Schema 输出，不要添加 markdown 代码块。".to_string(),
+                        "Strictly follow JSON Schema output rules — do not wrap in markdown fences."
+                            .to_string(),
                     );
                 } else {
                     extra_blocks.push(format!(
-                        "请严格遵循以下 JSON Schema 输出，不要包含 schema 之外的内容，不要添加 markdown 代码块。\nSchema: {}",
+                        "Strictly follow the JSON Schema below. Do not emit fields outside the schema and do not wrap in markdown fences.\nSchema: {}",
                         schema_text
                     ));
                 }
             }
-            "text" => {} // 默认值，无需注入
+            "text" => {} // default — nothing to inject
             _ => {
-                extra_blocks.push(format!("请以 {} 格式输出。", rf.ty));
+                extra_blocks.push(format!("Respond using the '{}' format.", rf.ty));
             }
         }
     }
@@ -163,7 +167,7 @@ fn format_part(part: &ContentPart) -> String {
                 .as_ref()
                 .and_then(|i| i.detail.as_deref())
                 .unwrap_or("auto");
-            format!("[图片: detail={detail}]")
+            format!("[image: detail={detail}]")
         }
         "input_audio" => {
             let fmt = part
@@ -171,7 +175,7 @@ fn format_part(part: &ContentPart) -> String {
                 .as_ref()
                 .map(|a| a.format.as_str())
                 .unwrap_or("unknown");
-            format!("[音频: format={fmt}]")
+            format!("[audio: format={fmt}]")
         }
         "file" => {
             let filename = part
@@ -179,8 +183,8 @@ fn format_part(part: &ContentPart) -> String {
                 .as_ref()
                 .and_then(|f| f.filename.as_deref())
                 .unwrap_or("unknown");
-            format!("[文件: filename={filename}]")
+            format!("[file: filename={filename}]")
         }
-        _ => format!("[未支持的内容类型: {}]", part.ty),
+        _ => format!("[unsupported content type: {}]", part.ty),
     }
 }

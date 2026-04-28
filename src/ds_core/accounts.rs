@@ -1,6 +1,6 @@
-//! 账号池管理 —— 多账号负载均衡
+//! Account pool — multi-account load balancing.
 //!
-//! 1 account = 1 session = 1 concurrency。多并发需横向扩展账号数。
+//! 1 account = 1 session = 1 concurrent request. Scale out by adding accounts.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use crate::ds_core::pow::{PowError, PowSolver};
 use futures::TryStreamExt;
 use log::{debug, info, warn};
 
-/// 账号状态信息
+/// Basic account identity for status reporting.
 pub struct AccountStatus {
     pub email: String,
     pub mobile: String,
@@ -42,7 +42,7 @@ impl Account {
     }
 }
 
-/// 持有期间账号标记为 busy，Drop 时自动释放
+/// Marks the account busy for the guard's lifetime; released on `Drop`.
 pub struct AccountGuard {
     account: Arc<Account>,
 }
@@ -66,20 +66,20 @@ pub struct AccountPool {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PoolError {
-    /// 所有账号初始化失败（没有可用账号）
-    #[error("所有账号初始化失败")]
+    /// Every account failed initialization (no healthy pool members).
+    #[error("all accounts failed to initialize")]
     AllAccountsFailed,
 
-    /// 下游客户端错误（网络、API 错误等）
-    #[error("客户端错误: {0}")]
+    /// Downstream client error (network, upstream API, etc.).
+    #[error("client error: {0}")]
     Client(#[from] ClientError),
 
-    /// PoW 计算失败（WASM 执行错误）
-    #[error("PoW 计算失败: {0}")]
+    /// Proof-of-work failed (WASM execution error).
+    #[error("proof of work failed: {0}")]
     Pow(#[from] PowError),
 
-    /// 账号配置验证失败
-    #[error("账号配置错误: {0}")]
+    /// Account configuration validation failed.
+    #[error("account configuration error: {0}")]
     Validation(String),
 }
 
@@ -100,7 +100,7 @@ impl AccountPool {
     ) -> Result<(), PoolError> {
         use futures::future::join_all;
 
-        // 全并发初始化所有账号
+        // Initialize every account concurrently
         let futures: Vec<_> = creds
             .into_iter()
             .map(|creds| {
@@ -115,11 +115,11 @@ impl AccountPool {
                     };
                     match init_account(&creds, &client, &solver, &model_types).await {
                         Ok(account) => {
-                            info!(target: "ds_core::accounts", "账号 {} 初始化成功", display_id);
+                            info!(target: "ds_core::accounts", "account {} initialized successfully", display_id);
                             Some(Arc::new(account))
                         }
                         Err(e) => {
-                            warn!(target: "ds_core::accounts", "账号 {} 初始化失败: {}", display_id, e);
+                            warn!(target: "ds_core::accounts", "account {} failed to initialize: {}", display_id, e);
                             None
                         }
                     }
@@ -137,7 +137,7 @@ impl AccountPool {
         Ok(())
     }
 
-    /// 轮询获取一个空闲的账号（必须拥有指定 model_type 的 session）
+    /// Round-robin acquire a free account (must have a session for `model_type`).
     pub fn get_account(&self, model_type: &str) -> Option<AccountGuard> {
         if self.accounts.is_empty() {
             return None;
@@ -163,7 +163,7 @@ impl AccountPool {
         None
     }
 
-    /// 获取所有账号的详细状态
+    /// Return a snapshot of pool members' identity fields
     pub fn account_statuses(&self) -> Vec<AccountStatus> {
         self.accounts
             .iter()
@@ -174,7 +174,7 @@ impl AccountPool {
             .collect()
     }
 
-    /// 优雅关闭：清理所有账号的所有 session
+    /// Graceful shutdown: delete every session for every account.
     pub async fn shutdown(&self, client: &DsClient) {
         use futures::future::join_all;
 
@@ -193,7 +193,7 @@ impl AccountPool {
                             if let Err(e) = client.delete_session(&token, session_id).await {
                                 warn!(
                                     target: "ds_core::accounts",
-                                    "清理 session 失败 ({}): {}",
+                                    "failed to delete session ({}): {}",
                                     &token[..8.min(token.len())],
                                     e
                                 );
@@ -228,7 +228,7 @@ async fn init_account(
         }
     }
 
-    Err(last_error.expect("循环至少执行一次"))
+    Err(last_error.expect("loop must run at least once"))
 }
 
 async fn try_init_account(
@@ -237,10 +237,10 @@ async fn try_init_account(
     solver: &PowSolver,
     model_types: &[String],
 ) -> Result<Account, PoolError> {
-    // 验证：email 和 mobile 至少一个非空
+    // Require at least one of email or mobile.
     if creds.email.is_empty() && creds.mobile.is_empty() {
         return Err(PoolError::Validation(
-            "email 和 mobile 不能同时为空".to_string(),
+            "email and mobile cannot both be empty".to_string(),
         ));
     }
 
@@ -268,7 +268,7 @@ async fn try_init_account(
     let login_data = client.login(&login_payload).await?;
     debug!(
         target: "ds_core::client",
-        "登录响应: code={}, msg={}, user_id={}, email={:?}, mobile={:?}",
+        "login response: code={}, msg={}, user_id={}, email={:?}, mobile={:?}",
         login_data.code,
         login_data.msg,
         login_data.user.id,
@@ -317,7 +317,7 @@ async fn health_check(
         chat_session_id: session_id.to_string(),
         parent_message_id: None,
         model_type: model_type.to_string(),
-        prompt: "只回复`Hello, world!`".to_string(),
+        prompt: "Reply with only `Hello, world!`".to_string(),
         ref_file_ids: vec![],
         thinking_enabled: false,
         search_enabled: false,
@@ -325,11 +325,11 @@ async fn health_check(
     };
 
     let mut stream = client.completion(token, &pow_header, &payload).await?;
-    // 消费流确保消息写入
+    // Drain the stream so the message is persisted
     while let Some(chunk) = stream.try_next().await? {
         let _ = chunk;
     }
 
-    debug!(target: "ds_core::accounts", "health_check 完成 model_type={}", model_type);
+    debug!(target: "ds_core::accounts", "health_check finished model_type={}", model_type);
     Ok(())
 }

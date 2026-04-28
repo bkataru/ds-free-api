@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Operational context for automated coding agents working in this repository. Body text mirrors `CLAUDE.md` aside from each file's opening lines — edit both files together when updating shared sections.
 
 ## Overview
 
@@ -14,6 +14,11 @@ Key dependencies and why they matter:
 - `pin-project-lite` — underpins every streaming response wrapper (`SseStream`, `StateStream`, etc.)
 - `axum` / `reqwest` — HTTP server and client respectively
 - `tokio` with `signal` feature — async runtime with graceful shutdown on SIGTERM/SIGINT
+
+**Upstream and fork**
+
+- **Upstream:** [llm-router/ds-free-api](https://github.com/llm-router/ds-free-api) by NIyueeE — original OpenAI- and Anthropic-compatible DeepSeek proxy.
+- **This fork:** [bkataru/ds-free-api](https://github.com/bkataru/ds-free-api) — English-only docs and source comments, `tools_present` compatibility for OpenAI-shaped clients, reasoning-merge and `pending_reasoning_flush` in `openai_adapter::response` (`converter.rs`), Anthropic compatibility preserved end-to-end, and converter trace instrumentation for debugging SSE frame flow.
 
 ## Principles
 
@@ -146,12 +151,15 @@ JSON body → serde deserialize → normalize (validation/defaults) → tools ex
 ds_core SSE bytes → SseStream (sse_parser) → StateStream (state/patch machine) → ConverterStream (converter) → ToolCallStream (tool_parser) → StopStream (stop sequences) → SSE bytes
 ```
 
+**Fork note:** `converter.rs` applies reasoning-merge (interim reasoning deltas folded into assistant content) and `pending_reasoning_flush` at stream phase boundaries so reasoning does not leak across chunks. Trace hooks in the converter path log frame ordering for debugging; enable via logging targets for `adapter` and response-oriented modules.
+
 All stream wrappers use `pin_project_lite::pin_project!` macro and implement the `Stream` trait with `poll_next`.
 
 ### Capability Toggles
 The adapter maps OpenAI request fields to DeepSeek internal flags in `request/resolver.rs`:
 - **Reasoning**: `reasoning_effort` defaults to `"high"` if absent (reasoning is on by default). Explicitly set to `"none"` to disable.
 - **Web search**: `web_search_options` enables search when present; omitted by default (search off).
+- **Tools presence (fork)**: `tools_present` is accepted and normalized so clients that explicitly signal tool availability stay compatible with the adapter's tool injection and parallel tool-call handling.
 
 ### Anthropic Compatibility Layer
 The Anthropic compat layer (`anthropic_compat/`) is a **pure protocol translator** that sits on top of `openai_adapter`:
@@ -207,7 +215,7 @@ Random base64 padding in SSE chunks to reach a target response size (~512 bytes)
 Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when empty.
 
 ### Model ID Mapping
-`model_types` in `[deepseek]` config (default: `["default", "expert"]`) maps each type to OpenAI model ID `deepseek-{type}` (e.g., `deepseek-default`, `deepseek-expert`). Anthropic compat uses the same model IDs.
+`model_types` in `[deepseek]` config (default: `["default", "expert"]`) maps each internal type token to advertised model IDs `deepseek-{type}` (e.g., `deepseek-default`, `deepseek-expert`). Anthropic exposes the **same IDs** on `/anthropic/v1/models` — there is no parallel Anthropic-only name table. Adjust `model_types` and labels via `config.toml` to control what clients list and select; the fork does not add extra alias layers beyond resolver and adapter mapping.
 
 ### PoW Fragility
 `pow.rs` loads a WASM module downloaded from DeepSeek's CDN. The solver hardcodes the wasm-bindgen-generated symbol `__wbindgen_export_0` for memory allocation. If DeepSeek recompiles the WASM and changes export ordering, instantiation will fail with `PowError::Execution`. The WASM URL is configurable in `config.toml` to allow quick updates.
@@ -219,7 +227,7 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 | Config loading | `src/config.rs` | Single unified entry, `-c` flag support |
 | DeepSeek chat flow | `src/ds_core/` | accounts → pow → completions → client |
 | OpenAI request parsing | `src/openai_adapter/request/` | normalize → tools → prompt → resolver |
-| OpenAI response conversion | `src/openai_adapter/response/` | sse_parser → state → converter → tool_parser |
+| OpenAI response conversion | `src/openai_adapter/response/` | sse_parser → state → converter (reasoning-merge, pending_reasoning_flush, trace hooks) → tool_parser |
 | Anthropic compat layer | `src/anthropic_compat/` | request mapping → openai_adapter → response mapping |
 | Anthropic streaming response | `src/anthropic_compat/response/stream.rs` | OpenAI SSE → Anthropic SSE event stream |
 | Anthropic aggregate response | `src/anthropic_compat/response/aggregate.rs` | OpenAI JSON → Anthropic JSON |
@@ -235,8 +243,8 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 
 - **Config**: Uncommented values in `config.toml` = required; commented = optional with default
 - **Module files**: `foo.rs` declares sub-modules, `foo/` contains implementation
-- **Comments**: Chinese in source files (team preference)
-- **Errors**: Chinese error messages for user-facing output
+- **Comments**: English (fork policy)
+- **Errors**: English for user-facing strings (fork policy)
 - **Logging**: `log` crate with explicit targets. Untargeted logs (e.g., bare `log::info!`) are prohibited. Targets used:
   - `ds_core::accounts`, `ds_core::client`
   - `adapter` (for `openai_adapter`)
@@ -247,7 +255,7 @@ Optional Bearer token auth via `[[server.api_tokens]]` in config; no auth when e
 - **Tests**: All tests are inline (`#[cfg(test)]` within `src/` files). `request.rs` has sync unit tests for parsing logic; `response.rs` has `tokio::test` async tests for stream aggregation. No separate `tests/` directory.
 - **Test output**: `println!` / `eprintln!` are allowed inside `#[cfg(test)]` blocks for debugging test failures; they remain prohibited in library code
 - **Import grouping**: std → third-party → `crate::` → local (`super`, `self`), separated by blank lines
-- **Comments**: Follow `docs/code-style.md`:
+- **Documentation style**: Follow `docs/code-style.md`:
   - `//!` — module docs: first line = responsibility, then key design decisions
   - `///` — public API docs: verb-led, note side effects and panic conditions
   - `//` — inline: explain "why", not "what"
@@ -298,24 +306,3 @@ cargo test converter_emits_role_and_content -- --exact
 
 # Run all Rust tests
 cargo test
-
-# Run only library tests (skips example compilation, faster iteration)
-cargo test --lib
-
-# Run Python e2e tests (requires `uv` and server running on port 5317)
-just e2e
-
-# Start server with e2e test config
-just e2e-serve
-
-# Individual checks
-cargo check
-cargo clippy -- -D warnings
-cargo fmt --check
-cargo audit        # requires: cargo install cargo-audit
-cargo machete      # requires: cargo install cargo-machete
-
-# Build
-cargo build
-cargo build --release
-```

@@ -1,4 +1,4 @@
-//! 非流式响应映射 —— 将 OpenAI ChatCompletion JSON 映射为 Anthropic Message JSON
+//! Aggregate (non-streaming) mapping — turn OpenAI ChatCompletion JSON into Anthropic Message JSON
 
 use log::debug;
 
@@ -6,12 +6,12 @@ use super::{
     ContentBlock, Message, OpenAiCompletion, OpenAiToolCall, Usage, finish_reason_map, map_id,
 };
 
-/// 将 OpenAI ChatCompletion JSON 映射为 Anthropic Message JSON
+/// Deserialize OpenAI completion JSON into an Anthropic `Message`, then encode to JSON bytes.
 pub fn from_chat_completion_bytes(openai_json: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
-    debug!(target: "anthropic_compat::response::aggregate", "开始映射非流式响应");
+    debug!(target: "anthropic_compat::response::aggregate", "mapping non-streaming completion payload");
     let openai: OpenAiCompletion = serde_json::from_slice(openai_json)?;
     let msg = map_completion(&openai);
-    debug!(target: "anthropic_compat::response::aggregate", "映射完成: content_blocks={}", msg.content.len());
+    debug!(target: "anthropic_compat::response::aggregate", "mapping complete; content_blocks={}", msg.content.len());
     serde_json::to_vec(&msg)
 }
 

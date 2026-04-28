@@ -1,24 +1,24 @@
-//! 模型解析 —— 将 OpenAI model 字段映射为 ds_core 能力标志
+//! Model id resolution — map OpenAI `model` strings to `ds_core` capability flags.
 //!
-//! 通过外部注入的 registry 实现模型别名到 model_type 的动态映射。
+//! Uses the injected registry to resolve aliases to concrete `model_type` values.
 
 use std::collections::HashMap;
 
 use crate::openai_adapter::types::WebSearchOptions;
 
-/// 模型解析结果
+/// Fully-resolved upstream model configuration.
 pub struct ModelResolution {
-    /// ds_core 使用的 model_type
+    /// `model_type` consumed by `ds_core`.
     pub model_type: String,
     pub thinking_enabled: bool,
     pub search_enabled: bool,
 }
 
-/// 根据 model_id 和扩展参数解析模型配置
+/// Resolve `model_id` plus optional extensions into capability flags.
 ///
-/// thinking_enabled 在 reasoning_effort 为 minimal/low/medium/high/xhigh 时启用。
-/// 若 reasoning_effort 未提供，默认按 "high" 处理（即 reasoning 默认开启）。
-/// search_enabled 在 web_search_options 存在时启用，默认关闭。
+/// `thinking_enabled` is on when `reasoning_effort` is one of `minimal`/`low`/`medium`/`high`/`xhigh`.
+/// When `reasoning_effort` is omitted it defaults to `"high"` (reasoning on by default).
+/// `search_enabled` turns on when `web_search_options` is present (off otherwise).
 pub fn resolve(
     registry: &HashMap<String, String>,
     model_id: &str,
@@ -29,7 +29,7 @@ pub fn resolve(
     let model_type = registry
         .get(&key)
         .cloned()
-        .ok_or_else(|| format!("不支持的模型: {}", model_id))?;
+        .ok_or_else(|| format!("unsupported model: {}", model_id))?;
 
     let reasoning_effort = reasoning_effort.unwrap_or("high");
     let thinking_enabled = matches!(

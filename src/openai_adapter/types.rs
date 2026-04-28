@@ -1,30 +1,29 @@
-//! OpenAI 协议类型定义 —— 请求与响应结构
+//! OpenAI-shaped request/response scaffolding (serde-tolerant superset).
 //!
-//! 原则：接口层面全对齐，无法实现的字段解析后忽略。
+//! Shape matches the upstream API; fields we cannot honor are still parsed and dropped later.
 
 #![allow(dead_code)]
-// 说明：本文件包含大量 OpenAI 兼容字段，其中仅以下字段/类型在 request/response 中被实际消费。
+// NOTE: This file intentionally mirrors OpenAI's sprawling surface area. The following
+// symbols are actually exercised by the adapter layers today:
 //
-// request  层直接使用：
-//   ChatCompletionRequest.model, messages, stream, stop, tools, tool_choice,
-//   parallel_tool_calls, web_search_options, reasoning_effort
-//   涉及子类型：Message / MessageContent / ContentPart / StopSequence / Tool /
-//   FunctionDefinition / CustomTool / CustomToolFormat / GrammarDefinition /
-//   ToolChoice / AllowedToolsChoice / AllowedTools / NamedToolChoice /
-//   NamedFunction / NamedCustomChoice / NamedCustom / FunctionCallOption /
-//   FunctionCallNamed / ResponseFormat / StreamOptions / WebSearchOptions
+// request path:
+//   ChatCompletionRequest.{model,messages,stream,stop,tools,tool_choice,
+//   parallel_tool_calls,web_search_options,reasoning_effort}
+//   plus nested types: Message, MessageContent, ContentPart, StopSequence, Tool,
+//   FunctionDefinition, CustomTool(+CustomToolFormat, GrammarDefinition), ToolChoice(+variants),
+//   FunctionCallOption, ResponseFormat, StreamOptions, WebSearchOptions, …
 //
-// response 层直接使用：
-//   ChatCompletion / Choice / MessageResponse / ChatCompletionChunk /
-//   ChunkChoice / Delta / Usage / ToolCall / FunctionCall / Model / ModelList
+// response path:
+//   ChatCompletion/{Choice,MessageResponse}, ChatCompletionChunk/{ChunkChoice,Delta}, Usage,
+//   ToolCall, FunctionCall, Model, ModelList
 
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
-// 请求类型
+// Request payloads
 // ============================================================================
 
-/// POST /v1/chat/completions 请求体
+/// `POST /v1/chat/completions` request envelope
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -33,7 +32,7 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub stream: bool,
 
-    // 以下字段全部解析以保持兼容性，但当前不消费
+    // Parsed for forward compatibility even when the adapter ignores them today
     #[serde(default)]
     pub audio: Option<AudioRequest>,
     #[serde(default)]
@@ -99,19 +98,19 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub web_search_options: Option<WebSearchOptions>,
 
-    // 兜底：未知字段直接忽略
+    // Swallow future/unknown fields untouched
     #[serde(flatten)]
     pub _extra: serde_json::Value,
 }
 
-/// 音频输出配置（顶层 audio 参数）
+/// Legacy `audio` generation hints (top-level field)
 #[derive(Debug, Deserialize, Clone)]
 pub struct AudioRequest {
     pub format: String,
     pub voice: serde_json::Value,
 }
 
-/// 预测输出
+/// Speculative decoding hints (`prediction`)
 #[derive(Debug, Deserialize, Clone)]
 pub struct Prediction {
     #[serde(rename = "type")]
@@ -119,7 +118,7 @@ pub struct Prediction {
     pub content: String,
 }
 
-/// 网页搜索选项
+/// Hosted web search controls
 #[derive(Debug, Deserialize, Clone)]
 pub struct WebSearchOptions {
     #[serde(default)]
@@ -147,7 +146,7 @@ pub struct ApproximateLocation {
     pub timezone: Option<String>,
 }
 
-/// 对话消息
+/// One chat turn (OpenAI multimodal capable)
 #[derive(Debug, Deserialize)]
 pub struct Message {
     pub role: String,
@@ -167,7 +166,7 @@ pub struct Message {
     pub refusal: Option<String>,
 }
 
-/// 消息内容：纯文本 或 多模态 parts
+/// Either a plain string or structured multimodal fragments
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum MessageContent {
@@ -175,7 +174,7 @@ pub enum MessageContent {
     Parts(Vec<ContentPart>),
 }
 
-/// 多模态内容块
+/// Multimodal part (text, image, audio, file, …)
 #[derive(Debug, Deserialize, Clone)]
 pub struct ContentPart {
     #[serde(rename = "type")]
@@ -215,7 +214,7 @@ pub struct FileContent {
     pub filename: Option<String>,
 }
 
-/// stop 序列：单字符串或字符串数组
+/// Stop sequence can be a lone string or heterogeneous list
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum StopSequence {
@@ -223,7 +222,7 @@ pub enum StopSequence {
     Multiple(Vec<String>),
 }
 
-/// 工具调用对象（用于 assistant message 的 tool_calls）
+/// Tool invocation entry attached to assistant chatter
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCall {
     pub id: String,
@@ -237,14 +236,14 @@ pub struct ToolCall {
     pub index: u32,
 }
 
-/// 函数调用对象
+/// Structured function call payload
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
 }
 
-/// 工具定义
+/// Tool catalog entry (function or vendor custom)
 #[derive(Debug, Deserialize, Clone)]
 pub struct Tool {
     #[serde(rename = "type")]
@@ -290,7 +289,7 @@ pub struct GrammarDefinition {
     pub syntax: String,
 }
 
-/// function_call 参数（已弃用）
+/// Deprecated `function_call` union from legacy clients
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum FunctionCallOption {
@@ -303,7 +302,7 @@ pub struct FunctionCallNamed {
     pub name: String,
 }
 
-/// tool_choice 参数
+/// `tool_choice` union (mode, named, custom, allowed_tools)
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum ToolChoice {
@@ -351,7 +350,7 @@ pub struct NamedCustom {
     pub name: String,
 }
 
-/// response_format 参数
+/// `response_format` guidance block
 #[derive(Debug, Deserialize, Clone)]
 pub struct ResponseFormat {
     #[serde(rename = "type")]
@@ -364,7 +363,7 @@ pub(crate) fn default_true() -> bool {
     true
 }
 
-/// stream_options 参数
+/// `stream_options` flags for streaming completions
 #[derive(Debug, Deserialize)]
 pub struct StreamOptions {
     #[serde(default)]
@@ -383,10 +382,10 @@ impl Default for StreamOptions {
 }
 
 // ============================================================================
-// 响应类型
+// Response payloads
 // ============================================================================
 
-/// 非流式 chat completion 响应
+/// Non-streaming `/v1/chat/completions` reply
 #[derive(Debug, Serialize)]
 pub struct ChatCompletion {
     pub id: String,
@@ -430,7 +429,7 @@ pub struct MessageResponse {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
-/// 流式 chunk
+/// `/v1/chat/completions` streamed chunk wrapper
 #[derive(Debug, Serialize)]
 pub struct ChatCompletionChunk {
     pub id: String,
@@ -477,7 +476,7 @@ pub struct Delta {
     pub obfuscation: Option<String>,
 }
 
-/// Token 用量
+/// Token accounting block
 #[derive(Debug, Serialize, Clone)]
 pub struct Usage {
     pub prompt_tokens: u32,
@@ -489,44 +488,44 @@ pub struct Usage {
     pub completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
-/// 模型列表项
+/// Individual `/v1/models` entry
 #[derive(Debug, Serialize)]
 pub struct Model {
     pub id: String,
     pub object: &'static str,
     pub created: u64,
     pub owned_by: &'static str,
-    /// 输入 token 上限（主字段）
+    /// Preferred max input tokens (when known)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_input_tokens: Option<u32>,
-    /// 输出 token 上限（主字段）
+    /// Preferred max output/completion tokens
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
-    /// 兼容字段：同 max_input_tokens
+    /// Compatibility alias for `max_input_tokens`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_length: Option<u32>,
-    /// 兼容字段：同 max_input_tokens
+    /// Compatibility alias for `max_input_tokens`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
-    /// 兼容字段：同 max_input_tokens
+    /// Compatibility alias for `max_input_tokens`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_context_length: Option<u32>,
-    /// 兼容字段：同 max_output_tokens
+    /// Compatibility alias for `max_output_tokens`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// 兼容字段：同 max_output_tokens
+    /// Compatibility alias for `max_output_tokens`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
 }
 
-/// 模型列表响应
+/// `/v1/models` list payload
 #[derive(Debug, Serialize)]
 pub struct ModelList {
     pub object: &'static str,
     pub data: Vec<Model>,
 }
 
-/// 音频响应对象
+/// Optional audio artifact metadata
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AudioResponse {
     pub id: String,
@@ -535,7 +534,7 @@ pub struct AudioResponse {
     pub transcript: String,
 }
 
-/// 注释（网页搜索引用）
+/// Web search citation annotations
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Annotation {
     #[serde(rename = "type")]
@@ -552,7 +551,7 @@ pub struct UrlCitation {
     pub url: String,
 }
 
-/// 日志概率信息
+/// Logprob payload (OpenAI native shape)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Logprobs {
     #[serde(default)]
@@ -576,7 +575,7 @@ pub struct TopLogprob {
     pub bytes: Option<Vec<u8>>,
 }
 
-/// 自定义工具调用内容
+/// Custom/non-function tool payload mirror
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CustomToolCall {
     pub name: String,
@@ -584,7 +583,7 @@ pub struct CustomToolCall {
     pub input: Option<serde_json::Value>,
 }
 
-/// Prompt tokens 细分
+/// Detailed prompt token accounting
 #[derive(Debug, Serialize, Clone)]
 pub struct PromptTokensDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -593,7 +592,7 @@ pub struct PromptTokensDetails {
     pub cached_tokens: Option<u32>,
 }
 
-/// Completion tokens 细分
+/// Detailed completion token accounting
 #[derive(Debug, Serialize, Clone)]
 pub struct CompletionTokensDetails {
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -1,8 +1,8 @@
-//! OpenAI 响应转换 —— 将 DeepSeek SSE 流映射为 OpenAI 响应格式
+//! Adapter response pipeline — convert DeepSeek SSE into OpenAI-shaped chunks / completions.
 //!
-//! 数据流：sse_parser -> state -> converter -> tool_parser
-//! - 仅 THINK / RESPONSE 片段映射到用户可见文本
-//! - obfuscation 在最终 SSE 序列化阶段动态注入
+//! Pipeline: `sse_parser` → `state` → `converter` → `tool_parser`
+//! - Only `THINK` / `RESPONSE` fragments become user-visible text.
+//! - Length obfuscation inserts dynamic padding at the final SSE serialization boundary.
 
 mod converter;
 mod sse_parser;
@@ -109,7 +109,7 @@ where
                                 *this.include_obfuscation,
                             )));
                         }
-                        // 允许 finish_reason 从 stop 升级为 tool_calls
+                        // Allow upgrading `finish_reason` from `stop` to `tool_calls` after parsing tools
                         if let Some(choice) = chunk.choices.first_mut()
                             && choice.delta.content.is_none()
                             && choice.delta.reasoning_content.is_none()
@@ -151,7 +151,7 @@ where
     }
 }
 
-/// 流式响应：把 ds_core 字节流转换为 OpenAI SSE 字节流
+/// Streaming path: convert the `ds_core` byte stream into OpenAI-style `data: {json}` SSE
 pub(crate) fn stream<S>(
     ds_stream: S,
     model: String,
@@ -166,7 +166,7 @@ where
 {
     debug!(
         target: "adapter",
-        "构建流式响应: model={}, include_usage={}, include_obfuscation={}, stop_count={}",
+        "building streaming response: model={}, include_usage={}, include_obfuscation={}, stop_count={}",
         model, include_usage, include_obfuscation, stop.len()
     );
     let sse = sse_parser::SseStream::new(ds_stream);
@@ -191,7 +191,7 @@ where
     Box::pin(stop_stream)
 }
 
-/// 非流式响应：聚合 SSE 流为单个 ChatCompletion JSON
+/// Buffered path: fuse the internal SSE stream down to one `chat.completion` payload
 pub(crate) async fn aggregate<S>(
     ds_stream: S,
     model: String,
@@ -202,7 +202,7 @@ pub(crate) async fn aggregate<S>(
 where
     S: Stream<Item = Result<Bytes, crate::ds_core::CoreError>> + Send,
 {
-    debug!(target: "adapter", "构建非流式响应: model={}, stop_count={}", model, stop.len());
+    debug!(target: "adapter", "building buffered response: model={}, stop_count={}", model, stop.len());
     let sse = sse_parser::SseStream::new(ds_stream);
     let state_stream = state::StateStream::new(sse);
     let converted =
@@ -240,7 +240,7 @@ where
 
     let parsed = tool_parser::parse_tool_calls(&content);
 
-    // stop 截断（仅非 tool_calls 路径）
+    // Stop-sequence trimming (ignored once tool calls are materialized)
     if let Some(pos) = stop_pos
         && parsed.is_none()
     {
@@ -304,7 +304,7 @@ where
     let json = serde_json::to_vec(&completion)?;
     debug!(
         target: "adapter",
-        "非流式响应聚合完成: finish_reason={:?}, has_tool_calls={}, usage={:?}",
+        "buffered completion synthesized: finish_reason={:?}, has_tool_calls={}, usage={:?}",
         completion.choices[0].finish_reason,
         completion.choices[0].message.tool_calls.is_some(),
         completion.usage
@@ -466,17 +466,17 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("===================================\n");
-        // 内容 "hi" (2 bytes) < W=19，会在缓冲区中延迟释放，
-        // 可能与 finish_reason 合并在同一个 chunk 中
+        // With W=19, the two-byte "hi" lingers until the rolling window releases it,
+        // so terminal metadata may piggyback that same chunk.
         assert!(chunks.len() >= 2);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // 所有 content 合并后应为 "hi"
+        // Reassembled assistant text should read "hi".
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert_eq!(all_content, "hi");
-        // 最终 finish_reason
+        // Final finish reason after coalescing deltas.
         assert_eq!(
             chunks.last().unwrap()["choices"][0]["finish_reason"],
             "stop"
@@ -509,7 +509,7 @@ mod tests {
         println!("======================================\n");
         assert!(chunks.len() >= 3);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // 所有 content 合并后应为 "x"
+        // Reassembled assistant text should read "x".
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
@@ -520,7 +520,7 @@ mod tests {
             .iter()
             .find(|c| c["usage"]["completion_tokens"].as_i64() == Some(12));
         assert!(usage_chunk.is_some(), "should have usage chunk");
-        // finish_reason 在含 choices 的最后一个 chunk 中
+        // `finish_reason` rides on the final chunk that still reports `choices`.
         let finish_chunk = chunks.iter().rev().find(|c| {
             c["choices"].as_array().map_or(false, |a| !a.is_empty())
                 && c["choices"][0]["finish_reason"].as_str().is_some()
@@ -553,12 +553,12 @@ mod tests {
         println!("===================================\n");
         assert!(chunks.len() >= 2);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // 某个 chunk 应包含 tool_calls
+        // At least one surfaced chunk should emit `tool_calls`.
         let has_tool_calls = chunks
             .iter()
             .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
         assert!(has_tool_calls, "should have a tool_calls chunk");
-        // content 不应包含 <tool_calls> 残留
+        // Assistant text must not leak raw `<tool_calls>` markup.
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
@@ -577,10 +577,10 @@ mod tests {
     #[tokio::test]
     async fn stream_fragmented_tool_calls_with_thinking() {
         let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"思考中\"}]}}}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"Thinking...\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"北京\\\"}}]\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"Beijing\\\"}}]\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
@@ -602,13 +602,13 @@ mod tests {
         println!("============================================================\n");
         assert!(chunks.len() >= 3);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // reasoning_content 应包含思考内容
+        // `reasoning_content` aggregates THINK fragments verbatim.
         let all_reasoning: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
             .collect();
-        assert!(all_reasoning.contains("思考中"), "should contain 思考中");
-        // 某个 chunk 应包含 tool_calls
+        assert!(all_reasoning.contains("Thinking..."), "expected THINK fragment `Thinking...`");
+        // At least one surfaced chunk should emit `tool_calls`.
         let has_tool_calls = chunks
             .iter()
             .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
@@ -622,7 +622,7 @@ mod tests {
             .unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["function"]["name"], "get_weather");
-        assert_eq!(calls[0]["function"]["arguments"], r#"{"city":"北京"}"#);
+        assert_eq!(calls[0]["function"]["arguments"], r#"{"city":"Beijing"}"#);
         // finish
         assert_eq!(
             chunks.last().unwrap()["choices"][0]["finish_reason"],
@@ -633,11 +633,11 @@ mod tests {
     #[tokio::test]
     async fn stream_with_tool_search_and_open() {
         let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"思考\"}]}}}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"Thinking\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"id\":3,\"type\":\"TOOL_SEARCH\",\"content\":null,\"queries\":[{\"query\":\"q\"}],\"results\":[],\"stage_id\":1}]}\n\n\
             data: {\"p\":\"response/fragments/-2/results\",\"o\":\"SET\",\"v\":[{\"url\":\"https://example.com\",\"title\":\"ex\",\"snippet\":\"snip\"}]}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"id\":4,\"type\":\"TOOL_OPEN\",\"status\":\"WIP\",\"result\":{\"url\":\"https://open.com\",\"title\":\"open\",\"snippet\":\"open-snippet\"},\"reference\":{\"id\":3,\"type\":\"TOOL_SEARCH\"},\"stage_id\":1}]}\n\n\
-            data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"THINK\",\"content\":\"继续\"}]}\n\n\
+            data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"THINK\",\"content\":\"Continuing\"}]}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"hello\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
@@ -660,14 +660,14 @@ mod tests {
         println!("=============================================\n");
         assert!(chunks.len() >= 3);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // 所有 reasoning 合并后应包含 "思考" 和 "继续"
+        // Concatenated reasoning should include both THINK snippets.
         let all_reasoning: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str())
             .collect();
-        assert!(all_reasoning.contains("思考"), "should contain 思考");
-        assert!(all_reasoning.contains("继续"), "should contain 继续");
-        // 所有 content 合并后应为 "hello"
+        assert!(all_reasoning.contains("Thinking"), "expected substring `Thinking`");
+        assert!(all_reasoning.contains("Continuing"), "expected substring `Continuing`");
+        // Assistant text should concatenate to "hello".
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
@@ -682,10 +682,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_include_obfuscation() {
-        // 使用足够长的文本（> W=19）确保内容经过完整的流式路径和 obfuscation
+        // Use a long fragment (>W chars) to exercise obfuscation + buffering
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"这是一段足够长的中文文本用于测试混淆\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"This is a sufficiently long test string for obfuscation testing purposes\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
             event: finish\ndata: {}\n\n";
         let bytes_stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -709,7 +709,7 @@ mod tests {
         }
         println!("============================================\n");
         assert!(chunks.len() >= 2);
-        // 所有含 choices 且有 content 的 chunk 都应被动态 padding 到目标长度附近
+        // Every chunk with both `choices` and `content` should hover near the padding target length
         for c in &chunks {
             if c["choices"][0]["delta"]["content"].as_str().is_some()
                 || c["choices"][0]["finish_reason"].as_str().is_some()
@@ -726,13 +726,13 @@ mod tests {
                 );
             }
         }
-        // 内容完整
+        // Preserve full assistant text after stripping padding.
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert!(
-            all_content.contains("足够长的中文文本"),
+            all_content.contains("sufficiently long test string"),
             "should contain expected text, got {all_content:?}"
         );
         // finish_reason
@@ -746,7 +746,7 @@ mod tests {
     async fn aggregate_tool_calls_with_leading_text() {
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, I will help you.\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
             event: finish\ndata: {}\n\n";
         let stream = futures::stream::iter(vec![sse_bytes(fixture)]);
@@ -757,10 +757,10 @@ mod tests {
         println!("\n=== AGGREGATED RESPONSE (tool_calls with leading text) ===");
         println!("{}", serde_json::to_string_pretty(&completion).unwrap());
         println!("===========================================================\n");
-        // 前导文本作为 content，tool_calls 结构化
+        // Leading conversational text streams as `content`, then tooling JSON follows
         assert_eq!(
             completion["choices"][0]["message"]["content"],
-            "好的，我来帮你。"
+            "Alright, I will help you."
         );
         let calls = completion["choices"][0]["message"]["tool_calls"]
             .as_array()
@@ -773,10 +773,10 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_leading_text_fragmented() {
-        // 模拟真实场景：前导文本 + 碎片化 JSON <tool_calls>
+            // Scenario: leading natural language + chunked `<tool_calls>` JSON
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你用豆包生成图片。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, I will help you generate the image.\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<too\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"l_calls>[{\\\"name\\\": \\\"astrbot_execute_shell\\\", \\\"arguments\\\": {\\\"command\\\": \\\"cat /data/astrbot/skills/doubao-image-gen/SKILL.md\\\"}}]</tool_calls>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
@@ -797,19 +797,19 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("====================================================================\n");
-        // 验证核心语义：前导文本 + tool_calls + finish_reason
+        // Verify we surface leading text, parsed tool calls, and final finish reasons
         assert!(chunks.len() >= 2);
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // 所有 content 合并后应包含前导文本
+        // Reassembled text should still include the conversational prefix.
         let all_content: String = chunks
             .iter()
             .filter_map(|c| c["choices"][0]["delta"]["content"].as_str())
             .collect();
         assert!(
-            all_content.contains("好的，我来帮你用豆包生成图片"),
+            all_content.contains("Alright, I will help you generate the image"),
             "should contain leading text, got {all_content:?}"
         );
-        // 某个 chunk 应包含 tool_calls
+        // At least one surfaced chunk should emit `tool_calls`.
         let has_tool_calls = chunks
             .iter()
             .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
@@ -830,7 +830,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_leading_text_multi_chunk_fragments() {
-        // 更真实的碎片化场景：JSON 被分成多块
+        // Heavier fragmentation splits JSON across deltas.
         // chunk 1: leading text
         // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}
         // chunk 3: ]
@@ -838,7 +838,7 @@ mod tests {
         // chunk 5: FINISHED status
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"让我来查一下。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Let me look it up.\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
@@ -860,7 +860,7 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("=============================================================\n");
-        // 应该输出: role, leading text, tool_calls, finish
+        // Expect role chunk, leading text, parsed tool calls, then finish metadata
         for (i, c) in chunks.iter().enumerate() {
             eprintln!(
                 "chunk[{}] content={:?} tool_calls={:?} finish={:?}",
@@ -870,7 +870,7 @@ mod tests {
                 c["choices"][0]["finish_reason"]
             );
         }
-        // 必须有 tool_calls chunk
+        // A dedicated chunk must advertise `tool_calls`.
         let has_tool_calls = chunks
             .iter()
             .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
@@ -881,12 +881,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_with_thinking_then_leading_text_then_fragmented_json() {
-        // 最完整的生产场景：thinking -> leading text -> 碎片化 <tool_calls>
+            // Full production mix: THINK → leading content → fragmented `<tool_calls>`
         let fixture = "event: ready\ndata: {}\n\n\
-            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"用户要查天气，我需要调用工具\"}]}}}\n\n\
+            data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"THINK\",\"content\":\"User wants weather info, I need to call the tool\"}]}}}\n\n\
             data: {\"p\":\"response/fragments\",\"o\":\"APPEND\",\"v\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的，我来帮你查\"}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"一下。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright, let me look it up\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"...\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"]</tool_calls>\"}\n\n\
@@ -918,7 +918,7 @@ mod tests {
                 c["choices"][0]["finish_reason"]
             );
         }
-        // 必须有 tool_calls chunk
+        // A dedicated chunk must advertise `tool_calls`.
         let has_tool_calls = chunks
             .iter()
             .any(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some());
@@ -929,14 +929,14 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_json_split_right_after_tag() {
-        // 真实碎片化场景：<tool_calls> 完整，但内容在后续 chunk 中
+            // `<tool_calls>` opens early while JSON arguments finish in later deltas
         // chunk 1: leading text
         // chunk 2: <tool_calls>[{"name": "f", "arguments": {}}]
-        // chunk 3: </tool_calls>  ← 单独一个 chunk
+            // Third chunk may only carry the closing `</tool_calls>` sentinel
         // chunk 4: FINISHED
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
-            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"好的。\"}\n\n\
+            data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"Alright.\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"f\\\", \\\"arguments\\\": {}}]\"}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"</tool_calls>\"}\n\n\
             data: {\"p\":\"response/status\",\"v\":\"FINISHED\"}\n\n\
@@ -967,7 +967,7 @@ mod tests {
 
     #[tokio::test]
     async fn stream_tool_calls_no_leading_text() {
-        // 最常见的生产场景：无 leading text，模型直接输出 <tool_calls>
+            // Common degenerate case — model jumps straight into `<tool_calls>`
         let fixture = "event: ready\ndata: {}\n\n\
             data: {\"v\":{\"response\":{\"fragments\":[{\"type\":\"RESPONSE\",\"content\":\"\"}]}}}\n\n\
             data: {\"p\":\"response/fragments/-1/content\",\"o\":\"APPEND\",\"v\":\"<tool_calls>[{\\\"name\\\": \\\"get_weather\\\", \\\"arguments\\\": {\\\"city\\\": \\\"beijing\\\"}}]</tool_calls>\"}\n\n\
@@ -989,7 +989,7 @@ mod tests {
             println!("chunk[{i}]:\n{}", serde_json::to_string_pretty(c).unwrap());
         }
         println!("===================================================\n");
-        // 应该有 role chunk + tool_calls chunk + finish chunk
+        // Expect role scaffolding, tool deltas, then canonical finish chunk
         for (i, c) in chunks.iter().enumerate() {
             eprintln!(
                 "chunk[{}] content={:?} tool_calls={:?} finish={:?}",
@@ -1005,7 +1005,7 @@ mod tests {
             chunks.len()
         );
         assert_eq!(chunks[0]["choices"][0]["delta"]["role"], "assistant");
-        // 找包含 tool_calls 的 chunk
+        // Locate the delta that actually lists `tool_calls`.
         let tc_idx = chunks
             .iter()
             .position(|c| c["choices"][0]["delta"]["tool_calls"].as_array().is_some())
@@ -1017,7 +1017,7 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["function"]["name"], "get_weather");
         assert_eq!(calls[0]["function"]["arguments"], r#"{"city":"beijing"}"#);
-        // 最后一个 chunk 的 finish_reason 应该是 tool_calls
+        // Final finish reason should advertise `tool_calls` when tools win
         let last = chunks.last().unwrap();
         assert_eq!(
             last["choices"][0]["finish_reason"], "tool_calls",

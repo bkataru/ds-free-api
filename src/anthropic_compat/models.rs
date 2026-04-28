@@ -1,6 +1,6 @@
-//! Anthropic Models API 响应生成
+//! Build Anthropic `GET /v1/models` payloads.
 //!
-//! 基于 openai_adapter 的模型列表，转换为 Anthropic /v1/models 响应格式。
+//! Start from [`OpenAIAdapter::list_models`] output and reshape it into Anthropic's list format.
 
 use log::debug;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::openai_adapter::OpenAIAdapter;
 
 // ============================================================================
-// 临时结构：反序列化 OpenAI 格式的模型列表
+// Temporary structs: deserialize OpenAI-shaped model lists
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
@@ -28,10 +28,10 @@ struct OpenAIModel {
 }
 
 // ============================================================================
-// Anthropic 协议类型
+// Anthropic wire types
 // ============================================================================
 
-/// 模型能力信息
+/// Declared model capabilities.
 #[derive(Debug, Serialize, Deserialize)]
 struct ModelCapabilities {
     thinking: ThinkingCapability,
@@ -40,27 +40,27 @@ struct ModelCapabilities {
     structured_outputs: CapabilitySupport,
 }
 
-/// Thinking 能力
+/// Extended thinking support.
 #[derive(Debug, Serialize, Deserialize)]
 struct ThinkingCapability {
     supported: bool,
     types: ThinkingTypes,
 }
 
-/// Thinking 类型支持
+/// Thinking mode toggles.
 #[derive(Debug, Serialize, Deserialize)]
 struct ThinkingTypes {
     enabled: CapabilitySupport,
     adaptive: CapabilitySupport,
 }
 
-/// 单项能力支持
+/// Simple on/off capability flag.
 #[derive(Debug, Serialize, Deserialize)]
 struct CapabilitySupport {
     supported: bool,
 }
 
-/// 单个模型信息
+/// One row in the Anthropic model catalog.
 #[derive(Debug, Serialize, Deserialize)]
 struct ModelInfo {
     id: String,
@@ -68,16 +68,16 @@ struct ModelInfo {
     ty: String,
     display_name: String,
     created_at: String,
-    /// 暂不填充，待 openai_adapter 返回实际值后启用
+    /// Left unset until `openai_adapter` exposes concrete limits.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_input_tokens: Option<u32>,
-    /// 暂不填充，待 openai_adapter 返回实际值后启用
+    /// Left unset until `openai_adapter` exposes concrete limits.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     capabilities: ModelCapabilities,
 }
 
-/// 模型列表响应
+/// Top-level list response envelope.
 #[derive(Debug, Serialize, Deserialize)]
 struct ModelListResponse {
     data: Vec<ModelInfo>,
@@ -87,22 +87,22 @@ struct ModelListResponse {
 }
 
 // ============================================================================
-// 响应生成
+// Response builders
 // ============================================================================
 
-/// 根据 openai_adapter 的模型列表生成 Anthropic 格式响应
+/// Build the Anthropic list JSON from `openai_adapter`'s model list.
 pub(crate) fn list(adapter: &OpenAIAdapter) -> Vec<u8> {
-    debug!(target: "anthropic_compat::models", "生成模型列表");
+    debug!(target: "anthropic_compat::models", "building model list response");
     list_from_json(&adapter.list_models())
 }
 
-/// 查询单个模型
+/// Look up a single model by id.
 pub(crate) fn get(adapter: &OpenAIAdapter, model_id: &str) -> Option<Vec<u8>> {
-    debug!(target: "anthropic_compat::models", "查询模型: {}", model_id);
+    debug!(target: "anthropic_compat::models", "lookup model: {}", model_id);
     get_from_json(&adapter.list_models(), model_id)
 }
 
-// 内部实现，方便测试
+// Internal helpers (unit-tested directly).
 fn list_from_json(openai_json: &[u8]) -> Vec<u8> {
     let openai_list: OpenAIModelList = match serde_json::from_slice(openai_json) {
         Ok(list) => list,
@@ -143,10 +143,10 @@ fn get_from_json(openai_json: &[u8], model_id: &str) -> Option<Vec<u8>> {
 }
 
 // ============================================================================
-// 模型映射
+// Model mapping
 // ============================================================================
 
-/// 将 OpenAI 模型信息映射为 Anthropic ModelInfo
+/// Map one OpenAI list entry into Anthropic `ModelInfo`.
 fn to_anthropic_model(m: &OpenAIModel) -> ModelInfo {
     let display_name = id_to_display_name(&m.id);
 
@@ -172,7 +172,7 @@ fn to_anthropic_model(m: &OpenAIModel) -> ModelInfo {
     }
 }
 
-/// 将 "deepseek-expert" 解析为 "DeepSeek Expert"
+/// Turn `deepseek-expert` into title-cased "DeepSeek Expert".
 fn id_to_display_name(id: &str) -> String {
     id.split('-')
         .map(|word| {
@@ -188,9 +188,9 @@ fn id_to_display_name(id: &str) -> String {
         .join(" ")
 }
 
-/// 将 Unix 时间戳（秒）转为 RFC 3339 格式字符串（UTC）
+/// Convert a unix timestamp (seconds) to an RFC3339 UTC string.
 ///
-/// 手动实现，避免引入日期库。支持 1970–2100 年范围。
+/// Hand-rolled helper to avoid a date dependency; validated for roughly 1970–2100.
 fn unix_to_rfc3339(secs: u64) -> String {
     let days = secs / 86_400;
     let rem_secs = secs % 86_400;

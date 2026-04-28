@@ -1,4 +1,4 @@
-//! 流式响应映射 —— 将 OpenAI ChatCompletionChunk SSE 流映射为 Anthropic Message SSE 流
+//! Streaming bridge — reshape OpenAI completion chunks (SSE) into Anthropic assistant events.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -14,7 +14,7 @@ use crate::anthropic_compat::AnthropicCompatError;
 use crate::openai_adapter::OpenAIAdapterError;
 
 // ============================================================================
-// Anthropic 流式事件类型
+// Anthropic streaming wire events
 // ============================================================================
 
 #[derive(Debug, Serialize)]
@@ -86,7 +86,7 @@ struct MessageStopEvent {
 }
 
 // ============================================================================
-// OpenAI chunk 反序列化（最小化结构）
+// OpenAI SSE chunk payloads (minimal schema)
 // ============================================================================
 
 #[derive(Debug, serde::Deserialize)]
@@ -118,7 +118,7 @@ struct OpenAiDelta {
 }
 
 // ============================================================================
-// SSE 解析缓冲
+// SSE line reassembly
 // ============================================================================
 
 struct SseBuffer {
@@ -148,7 +148,7 @@ impl SseBuffer {
 }
 
 // ============================================================================
-// 状态机
+// Converter state
 // ============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -224,7 +224,7 @@ impl StreamState {
     fn handle_chunk(&mut self, chunk: OpenAiChunk) -> Vec<StreamEvent> {
         let mut events = Vec::new();
 
-        // role chunk → message_start
+        // role delta → emit `message_start`
         if !self.started
             && let Some(choice) = chunk.choices.first()
             && choice.delta.role.is_some()
@@ -288,7 +288,7 @@ impl StreamState {
             });
         }
 
-        // tool_calls（一次性完整输出）
+        // `tool_calls` arrive fully-formed in one chunk
         if let Some(ref calls) = delta.tool_calls
             && !calls.is_empty()
         {
@@ -321,8 +321,8 @@ impl StreamState {
                 });
                 self.block_index += 1;
             }
-            // tool_use 是每个 call 一个 block，最后一个已经 +1 了
-            // 但 transition_to 时已经设为 ToolUse，现在设为 None 表示当前无活跃 block
+            // Each Anthropic `tool_use` block maps 1:1 to an upstream tool call (index already advanced).
+            // `transition_to` opened the tool block; reset to idle now that streaming finished.
             self.block_kind = BlockKind::None;
         }
 
@@ -350,7 +350,7 @@ impl StreamState {
 }
 
 // ============================================================================
-// 内部事件枚举（序列化前中间表示）
+// Intermediate events before SSE framing
 // ============================================================================
 
 enum StreamEvent {
@@ -446,7 +446,7 @@ impl StreamEvent {
 }
 
 // ============================================================================
-// AnthropicStream 转换器
+// `AnthropicStream` adapter
 // ============================================================================
 
 pin_project! {
@@ -479,7 +479,7 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        // 优先输出待处理事件
+        // Flush buffered intermediate events before awaiting more bytes.
         if !this.pending_events.is_empty() {
             let event = this.pending_events.remove(0);
             return Poll::Ready(Some(event.to_sse_bytes().map_err(|e| {
@@ -490,7 +490,7 @@ where
         loop {
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
-                    trace!(target: "anthropic_compat::response::stream", "收到 SSE 字节: {} bytes", bytes.len());
+                    trace!(target: "anthropic_compat::response::stream", "SSE chunk: {} bytes", bytes.len());
                     let datas = this.buffer.feed(&bytes);
                     for data in datas {
                         let chunk: OpenAiChunk = match serde_json::from_str(&data) {
@@ -518,8 +518,8 @@ where
                     return Poll::Ready(Some(Err(AnthropicCompatError::from(e))));
                 }
                 Poll::Ready(None) => {
-                    debug!(target: "anthropic_compat::response::stream", "OpenAI 流结束, started={}, finished={}", this.state.started, this.state.finished);
-                    // 流结束但未收到 finish_reason：优雅关闭
+                    debug!(target: "anthropic_compat::response::stream", "OpenAI upstream finished; started={}, finished={}", this.state.started, this.state.finished);
+                    // EOF before `finish_reason` — emit a synthetic graceful shutdown.
                     if !this.state.finished && this.state.started {
                         this.state.finished = true;
                         let mut events = this.state.transition_to(BlockKind::None);
@@ -553,10 +553,10 @@ where
 }
 
 // ============================================================================
-// 公共入口
+// Entry point
 // ============================================================================
 
-/// 将 OpenAI ChatCompletionChunk SSE 流映射为 Anthropic Message SSE 流
+/// Adapt an OpenAI-style chunk stream into Anthropic SSE events.
 pub fn from_chat_completion_stream<S>(
     openai_stream: S,
     input_tokens: u32,
@@ -564,12 +564,12 @@ pub fn from_chat_completion_stream<S>(
 where
     S: Stream<Item = Result<Bytes, OpenAIAdapterError>> + Send + 'static,
 {
-    debug!(target: "anthropic_compat::response::stream", "启动流式响应映射, input_tokens={}", input_tokens);
+    debug!(target: "anthropic_compat::response::stream", "starting streaming mapper; input_tokens={}", input_tokens);
     Box::pin(AnthropicStream::new(openai_stream, input_tokens))
 }
 
 // ============================================================================
-// 测试
+// Tests
 // ============================================================================
 
 #[cfg(test)]

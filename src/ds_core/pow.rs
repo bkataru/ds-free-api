@@ -1,11 +1,11 @@
-//! PoW 计算器 —— 基于 DeepSeek WASM 的 DeepSeekHashV1 算法实现
+//! Proof-of-work solver — DeepSeek WASM `DeepSeekHashV1`.
 //!
-//! 通过签名动态探测 wasm-bindgen 导出符号，避免硬编码 __wbindgen_export_0 导致
-//! DeepSeek 更新 WASM 后无法启动。
+//! Discovers wasm-bindgen exports by signature instead of hardcoding `__wbindgen_export_*`
+//! so upstream WASM updates don't brick startup.
 
 use wasmtime::{AsContextMut, Engine, InstancePre, Linker, Module, Store, ValType};
 
-// 复用 client 的 ChallengeData，避免重复定义
+// Reuse `ChallengeData` from `client` to avoid duplicating the struct.
 pub use crate::ds_core::client::ChallengeData as Challenge;
 
 #[derive(Clone)]
@@ -28,7 +28,7 @@ pub struct PowResult {
 }
 
 impl PowResult {
-    /// 将 PoW 结果转换为 base64 编码的 header
+    /// Serialize the PoW result into the base64-encoded header value.
     pub fn to_header(&self) -> String {
         let json = serde_json::json!({
             "algorithm": self.algorithm,
@@ -79,7 +79,7 @@ impl PowSolver {
             PowError::WasmInit("__wbindgen_add_to_stack_pointer not found".to_string())
         })?;
 
-        // allocator: 优先找 __wbindgen_malloc，其次是签名匹配的 __wbindgen_export_*
+        // Allocator: prefer `__wbindgen_malloc`, otherwise any `__wbindgen_export_*` with the same signature.
         let alloc_name = find_export_by_names(
             &exports,
             &["__wbindgen_malloc"],
@@ -96,7 +96,7 @@ impl PowSolver {
         })
         .ok_or_else(|| PowError::WasmInit("allocator export not found".to_string()))?;
 
-        // wasm_solve: 优先显式名称，再按唯一签名 (i32, i32, i32, i32, i32, f64) -> () 探测
+        // Solver: prefer `wasm_solve`, else the sole export with signature (i32,i32,i32,i32,i32,f64) -> ().
         let solve_name = find_export_by_names(
             &exports,
             &["wasm_solve"],

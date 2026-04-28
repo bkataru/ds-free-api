@@ -1,4 +1,4 @@
-//! SSE 解析 —— 将 ds_core 字节流切分为独立 SSE 事件
+//! SSE framing helpers — subdivide upstream `Bytes` payloads into discrete SSE events.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -11,7 +11,7 @@ use log::debug;
 
 use crate::openai_adapter::OpenAIAdapterError;
 
-/// 单个 SSE 事件
+/// One parsed SSE stanza (`event` + fused `data` lines).
 #[derive(Debug, Clone)]
 pub struct SseEvent {
     pub event: Option<String>,
@@ -20,7 +20,7 @@ pub struct SseEvent {
 
 pin_project! {
     #[allow(unused_doc_comments)]
-    /// 包装底层字节流，将其切分为独立的 SSE 事件
+    /// Incremental adaptor that emits fully framed `SseEvent` values while honoring UTF-8 boundaries.
     pub struct SseStream<S> {
         #[pin]
         inner: S,
@@ -30,7 +30,7 @@ pin_project! {
 }
 
 impl<S> SseStream<S> {
-    /// 创建 SSE 流包装器
+    /// Wrap an arbitrary byte stream.
     pub fn new(inner: S) -> Self {
         Self {
             inner,
@@ -60,9 +60,9 @@ where
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    debug!(target: "adapter", "SSE 流错误: {}", e);
+                    debug!(target: "adapter", "SSE upstream error: {}", e);
                     return Poll::Ready(Some(Err(OpenAIAdapterError::Internal(format!(
-                        "SSE 流错误: {}",
+                        "sse stream error: {}",
                         e
                     )))));
                 }
@@ -91,7 +91,7 @@ where
     }
 }
 
-/// 把 raw_buf 中完整的 UTF-8 前缀移动到 text_buf，残留不完整的字节留在 raw_buf
+/// Slide complete UTF-8 prefixes from `raw_buf` onto `text_buf`, leaving dangling bytes queued.
 fn decode_utf8_prefix(raw: &mut Vec<u8>, text: &mut String) {
     if raw.is_empty() {
         return;
@@ -111,7 +111,7 @@ fn decode_utf8_prefix(raw: &mut Vec<u8>, text: &mut String) {
     }
 }
 
-/// 从 buf 中提取第一个以 \n\n 分隔的 SSE 事件块
+/// Pop the earliest `\n\n` delimited SSE block from `buf`.
 fn try_pop_event(buf: &mut String) -> Option<SseEvent> {
     let pos = buf.find("\n\n")?;
     let tail = buf.split_off(pos);

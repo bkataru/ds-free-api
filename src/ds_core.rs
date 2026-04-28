@@ -1,6 +1,6 @@
-//! DeepSeek 核心模块 —— OpenAI API 到 DeepSeek 的适配层
+//! DeepSeek core — adapter layer from the OpenAI API shape to DeepSeek.
 //!
-//! 对外暴露最小接口：DeepSeekCore, CoreError, ChatRequest
+//! Exposes the minimal surface area: [`DeepSeekCore`], [`CoreError`], [`ChatRequest`].
 
 mod accounts;
 mod client;
@@ -17,22 +17,22 @@ use accounts::AccountPool;
 use client::{ClientError, DsClient};
 use pow::{PowError, PowSolver};
 
-/// 内核层错误类型
+/// Core-layer error surface.
 #[derive(Debug, thiserror::Error)]
 pub enum CoreError {
-    /// 服务过载：所有账号都在忙或不健康
+    /// Overload: every account is busy or unhealthy.
     #[error("no available account")]
     Overloaded,
 
-    /// PoW 计算失败
+    /// Proof-of-work solving failed.
     #[error("proof of work failed: {0}")]
     ProofOfWorkFailed(#[from] PowError),
 
-    /// 提供商错误：网络、业务错误、Token 失效等
+    /// Provider-side failure: network, business errors, expired tokens, etc.
     #[error("provider: {0}")]
     ProviderError(String),
 
-    /// 流处理错误：连接中断等
+    /// Stream processing failure: disconnects and similar.
     #[error("stream error: {0}")]
     Stream(String),
 }
@@ -70,12 +70,12 @@ impl DeepSeekCore {
         .await
         .map_err(|e| match e {
             accounts::PoolError::AllAccountsFailed => {
-                CoreError::ProviderError("所有账号初始化失败".to_string())
+                CoreError::ProviderError("all accounts failed to initialize".to_string())
             }
             accounts::PoolError::Client(e) => CoreError::ProviderError(e.to_string()),
             accounts::PoolError::Pow(e) => CoreError::ProofOfWorkFailed(e),
             accounts::PoolError::Validation(msg) => {
-                CoreError::ProviderError(format!("配置错误: {}", msg))
+                CoreError::ProviderError(format!("configuration error: {}", msg))
             }
         })?;
 
@@ -84,9 +84,9 @@ impl DeepSeekCore {
         Ok(Self { completions })
     }
 
-    /// 发起对话请求，返回 SSE 字节流
+    /// Start a chat request; returns a raw SSE byte stream.
     ///
-    /// 流结束或丢弃时自动释放账号
+    /// The leased account is released when the stream ends or is dropped.
     pub async fn v0_chat(
         &self,
         req: ChatRequest,
@@ -101,7 +101,7 @@ impl DeepSeekCore {
         self.completions.account_statuses()
     }
 
-    /// 优雅关闭：清理所有账号的 session
+    /// Graceful shutdown: delete sessions for every account.
     pub async fn shutdown(&self) {
         self.completions.shutdown().await;
     }

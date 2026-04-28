@@ -1,6 +1,6 @@
-//! SSE 流桥接 —— 泛型 Stream 转 axum Body
+//! SSE stream bridge — generic `Stream` into axum `Body`
 //!
-//! 支持 OpenAI 与 Anthropic 两种流式响应。
+//! Supports streaming responses for both OpenAI and Anthropic.
 
 use axum::{
     body::Body,
@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures::Stream;
 use futures::StreamExt;
 
-/// SSE 响应体包装器（泛型）
+/// SSE response body wrapper (generic)
 pub struct SseBody<S> {
     inner: S,
 }

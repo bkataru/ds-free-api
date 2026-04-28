@@ -1,18 +1,18 @@
-//! 工具解析 —— 校验 tools/tool_choice 并生成提示词注入文本
+//! Tool parsing — validate `tools` / `tool_choice` and build injected reminder text.
 //!
-//! 由于 ds_core 不支持原生 function calling，本模块将工具定义降级为
-//! 自然语言描述，并追加到 prompt 中引导模型输出。
+//! `ds_core` does not expose native function calling; this adapter downgrades definitions to prose
+//! appended before the assistant block so models still emit structured `<tool_calls>` output.
 
 use crate::openai_adapter::types::{
     AllowedTools, AllowedToolsChoice, ChatCompletionRequest, CustomTool, CustomToolFormat,
     FunctionDefinition, Tool, ToolChoice,
 };
 
-/// 提取后的工具上下文
+/// Tool-related context lifted out of an OpenAI request.
 pub struct ToolContext {
-    /// 格式化后的工具定义文本
+    /// Rendered tool catalog for the reminder block.
     pub defs_text: Option<String>,
-    /// 根据 tool_choice / parallel_tool_calls 追加的行为指令
+    /// Extra behavioral lines derived from `tool_choice` / `parallel_tool_calls`.
     pub instruction_text: Option<String>,
 }
 
@@ -20,9 +20,9 @@ fn has_tools(req: &ChatCompletionRequest) -> bool {
     req.tools.as_ref().map(|t| !t.is_empty()).unwrap_or(false)
 }
 
-/// 从请求中提取并校验工具信息
+/// Extract tooling metadata or fail validation.
 ///
-/// 当 tool_choice 为 none 时返回空的 ToolContext，不生成任何注入文本。
+/// When `tool_choice` is `"none"` this returns empty `ToolContext` (no injection text).
 pub fn extract(req: &ChatCompletionRequest) -> Result<ToolContext, String> {
     let default_choice = if has_tools(req) {
         ToolChoice::Mode("auto".to_string())
@@ -45,43 +45,52 @@ pub fn extract(req: &ChatCompletionRequest) -> Result<ToolContext, String> {
     match tool_choice {
         ToolChoice::Mode(mode) => {
             if mode == "required" {
-                instruction_lines.push("注意：你必须调用一个或多个工具。".to_string());
+                instruction_lines
+                    .push("You must call one or more tools.".to_string());
             }
         }
         ToolChoice::AllowedTools(AllowedToolsChoice { allowed_tools, .. }) => {
             build_allowed_tools_instruction(allowed_tools, &mut instruction_lines)?;
         }
         ToolChoice::Named(named) => {
-            instruction_lines.push(format!("注意：你必须调用 '{}' 工具。", named.function.name));
+            instruction_lines.push(format!(
+                "You must call the '{}' tool.",
+                named.function.name
+            ));
         }
         ToolChoice::Custom(custom) => {
             instruction_lines.push(format!(
-                "注意：你必须调用 '{}' 自定义工具。",
+                "You must call the custom tool '{}'.",
                 custom.custom.name
             ));
         }
     }
 
     if req.parallel_tool_calls == Some(false) {
-        instruction_lines.push("注意：一次只能调用一个工具。".to_string());
+        instruction_lines.push("You may only call a single tool invocation.".to_string());
     }
 
-    instruction_lines
-        .push("注意：当需要调用工具时，请严格按如下格式输出，不要添加任何解释性文字：".to_string());
-    instruction_lines.push("<tool_calls>".to_string());
-    instruction_lines.push("[{\"name\": \"工具名\", \"arguments\": {参数JSON}}]".to_string());
-    instruction_lines.push("</tool_calls>".to_string());
-    instruction_lines.push("多个工具调用可在同一数组中列出多个对象。".to_string());
-    instruction_lines.push("输出示例：".to_string());
+    instruction_lines.push(
+        "When tools are required, respond using the format below with no extra prose:"
+            .to_string(),
+    );
     instruction_lines.push("<tool_calls>".to_string());
     instruction_lines.push(
-        "[{\"name\": \"get_weather\", \"arguments\": {\"city\": \"北京\"}}, {\"name\": \"get_weather\", \"arguments\": {\"city\": \"上海\"}}]"
+        "[{\"name\": \"<tool_name>\", \"arguments\": {<args-json>}}]".to_string(),
+    );
+    instruction_lines.push("</tool_calls>".to_string());
+    instruction_lines.push("Multiple tool calls can appear as multiple objects in the same array."
+        .to_string());
+    instruction_lines.push("Example:".to_string());
+    instruction_lines.push("<tool_calls>".to_string());
+    instruction_lines.push(
+        "[{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Beijing\"}}, {\"name\": \"get_weather\", \"arguments\": {\"city\": \"Shanghai\"}}]"
             .to_string(),
     );
     instruction_lines.push("</tool_calls>".to_string());
 
     let defs_text = if has_tools(req) {
-        let mut lines = vec!["你可以使用以下工具：".to_string()];
+        let mut lines = vec!["You can use the following tools:".to_string()];
         for (i, tool) in req.tools.as_ref().unwrap().iter().enumerate() {
             lines.push(format_tool(tool, i)?);
         }
@@ -106,28 +115,28 @@ fn validate_tool_choice(tc: &ToolChoice, tools: Option<&[Tool]>) -> Result<(), S
     match tc {
         ToolChoice::Mode(mode) => {
             if !matches!(mode.as_str(), "none" | "auto" | "required") {
-                return Err(format!("tool_choice 无效模式: {}", mode));
+                return Err(format!("tool_choice has invalid mode: {}", mode));
             }
             if matches!(mode.as_str(), "auto" | "required")
                 && tools.map(|t| t.is_empty()).unwrap_or(true)
             {
-                return Err("tool_choice 为 'auto' 或 'required' 时必须提供 tools".into());
+                return Err("tool_choice 'auto' or 'required' requires a non-empty tools list".into());
             }
             Ok(())
         }
         ToolChoice::Named(_) | ToolChoice::Custom(_) => {
             if tools.is_none() {
-                return Err("tool_choice 指定了具体工具时必须提供 tools".into());
+                return Err("tool_choice names a specific tool but `tools` is missing".into());
             }
             Ok(())
         }
         ToolChoice::AllowedTools(AllowedToolsChoice { allowed_tools, .. }) => {
             if tools.is_none() {
-                return Err("tool_choice 指定了 allowed_tools 时必须提供 tools".into());
+                return Err("tool_choice uses allowed_tools but `tools` is missing".into());
             }
             if !matches!(allowed_tools.mode.as_str(), "auto" | "required") {
                 return Err(format!(
-                    "allowed_tools.mode 必须是 'auto' 或 'required'，收到: {}",
+                    "allowed_tools.mode must be 'auto' or 'required'; got {}",
                     allowed_tools.mode
                 ));
             }
@@ -148,14 +157,14 @@ fn build_allowed_tools_instruction(
             .collect();
         if !names.is_empty() {
             lines.push(format!(
-                "注意：你只能从以下允许的工具中选择：{}。",
+                "You may only choose among these allowed tools: {}.",
                 names.join(", ")
             ));
         }
     }
 
     if allowed_tools.mode == "required" {
-        lines.push("注意：你必须调用一个或多个工具。".to_string());
+        lines.push("You must call one or more tools.".to_string());
     }
     Ok(())
 }
@@ -164,28 +173,29 @@ fn format_tool(tool: &Tool, idx: usize) -> Result<String, String> {
     match tool.ty.as_str() {
         "function" => {
             let func = tool.function.as_ref().ok_or_else(|| {
-                format!("tools[{}] 类型为 'function' 时必须提供 function 定义", idx)
+                format!(
+                    "tools[{idx}] with type 'function' must include a function definition",
+                )
             })?;
             format_function(func)
         }
         "custom" => {
-            let custom = tool
-                .custom
-                .as_ref()
-                .ok_or_else(|| format!("tools[{}] 类型为 'custom' 时必须提供 custom 定义", idx))?;
+            let custom = tool.custom.as_ref().ok_or_else(|| {
+                format!("tools[{idx}] with type 'custom' must include a custom definition")
+            })?;
             Ok(format_custom(custom))
         }
-        _ => Err(format!("tools[{}] 不支持的类型: {}", idx, tool.ty)),
+        _ => Err(format!("tools[{idx}] has unsupported type: {}", tool.ty)),
     }
 }
 
 fn format_function(func: &FunctionDefinition) -> Result<String, String> {
     if func.name.trim().is_empty() {
-        return Err("tools 中 function 缺少必填字段 'name'".into());
+        return Err("function tool is missing required field 'name'".into());
     }
     let params = serde_json::to_string(&func.parameters).unwrap_or_else(|_| "{}".into());
     Ok(format!(
-        "- {} (function): {}\n  参数(JSON schema): {}",
+        "- {} (function): {}\n  parameters (JSON schema): {}",
         func.name,
         func.description.as_deref().unwrap_or(""),
         params
@@ -197,16 +207,16 @@ fn format_custom(custom: &CustomTool) -> String {
         Some(CustomToolFormat::Text) => "text",
         Some(CustomToolFormat::Grammar { grammar }) => {
             return format!(
-                "- {} (custom): {}\n  格式: grammar(syntax: {})",
+                "- {} (custom): {}\n  format: grammar(syntax: {})",
                 custom.name,
                 custom.description.as_deref().unwrap_or(""),
                 grammar.syntax
             );
         }
-        None => "无约束",
+        None => "unconstrained",
     };
     format!(
-        "- {} (custom): {}\n  格式: {}",
+        "- {} (custom): {}\n  format: {}",
         custom.name,
         custom.description.as_deref().unwrap_or(""),
         format_desc

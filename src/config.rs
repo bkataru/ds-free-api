@@ -1,61 +1,61 @@
-//! 配置加载模块 —— 统一配置入口
+//! Configuration loading — single entry point for runtime settings
 //!
-//! 支持 `-c <path>` 命令行参数，默认值见下方函数。
-//! config.toml 中注释项使用代码默认值。
+//! Supports `-c <path>` CLI arguments; defaults are documented on the helpers below.
+//! Commented-out keys in `config.toml` fall back to these code defaults.
 
 use serde::Deserialize;
 use std::path::Path;
 
-/// 应用配置根结构
+/// Root application configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// 账号池（必需）
+    /// Account pool (required)
     pub accounts: Vec<Account>,
-    /// DeepSeek 相关配置
+    /// DeepSeek-related settings
     #[serde(default)]
     pub deepseek: DeepSeekConfig,
-    /// HTTP 服务器配置（必填）
+    /// HTTP server settings (required)
     pub server: ServerConfig,
 }
 
-/// 单个账号配置
+/// Single account entry
 #[derive(Debug, Clone, Deserialize)]
 pub struct Account {
-    /// 邮箱（与 mobile 二选一）
+    /// Email (use either this or `mobile`)
     pub email: String,
-    /// 手机号（与 email 二选一）
+    /// Phone number (use either this or `email`)
     pub mobile: String,
-    /// 区号（与 mobile 配合使用，如 "+86"）
+    /// Country/region code paired with `mobile` (e.g. "+86")
     pub area_code: String,
-    /// 密码
+    /// Password
     pub password: String,
 }
 
-/// DeepSeek 客户端配置
+/// DeepSeek client configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeepSeekConfig {
-    /// API 基础地址
+    /// API base URL
     #[serde(default = "default_api_base")]
     pub api_base: String,
-    /// WASM 文件完整 URL（PoW 计算所需，版本号可能变动）
+    /// Full WASM asset URL (required for PoW; version may change)
     #[serde(default = "default_wasm_url")]
     pub wasm_url: String,
-    /// User-Agent 请求头
+    /// `User-Agent` header
     #[serde(default = "default_user_agent")]
     pub user_agent: String,
-    /// X-Client-Version 请求头（用于 expert 模型等功能）
+    /// `X-Client-Version` header (used for expert model features, etc.)
     #[serde(default = "default_client_version")]
     pub client_version: String,
-    /// X-Client-Platform 请求头
+    /// `X-Client-Platform` header
     #[serde(default = "default_client_platform")]
     pub client_platform: String,
-    /// 定义支持的模型类型列表，每种类型会自动映射为 OpenAI 的 model_id：deepseek-<type>
+    /// Supported model types; each maps to an OpenAI `model_id` as `deepseek-<type>`
     #[serde(default = "default_model_types")]
     pub model_types: Vec<String>,
-    /// 各模型类型的输入 token 限制（与 model_types 按索引一一对应）
+    /// Per-type input token limits (aligned with `model_types` by index)
     #[serde(default = "default_max_input_tokens")]
     pub max_input_tokens: Vec<u32>,
-    /// 各模型类型的输出 token 限制（与 model_types 按索引一一对应）
+    /// Per-type output token limits (aligned with `model_types` by index)
     #[serde(default = "default_max_output_tokens")]
     pub max_output_tokens: Vec<u32>,
 }
@@ -88,9 +88,9 @@ fn default_max_output_tokens() -> Vec<u32> {
 }
 
 impl DeepSeekConfig {
-    /// 生成 OpenAI 模型注册表映射
+    /// Build the OpenAI-facing model registry map
     ///
-    /// key 为小写的 model_id（如 deepseek-default），value 为内部 model_type（如 default）
+    /// Keys are lowercased `model_id` values (e.g. `deepseek-default`); values are internal `model_type` strings (e.g. `default`).
     pub fn model_registry(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
         for ty in &self.model_types {
@@ -100,56 +100,56 @@ impl DeepSeekConfig {
     }
 }
 
-/// HTTP 服务器配置（必填）
+/// HTTP server settings (required)
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
-    /// 监听地址
+    /// Bind address
     pub host: String,
-    /// 监听端口
+    /// Listen port
     pub port: u16,
-    /// API 访问令牌列表，留空则不鉴权
+    /// API access tokens; leave empty to disable auth
     #[serde(default)]
     pub api_tokens: Vec<ApiToken>,
-    // TODO: admin_password — 等控制面板端点实现时再加
+    // TODO: admin_password — add when admin panel endpoints ship
 }
 
-/// API 访问令牌
+/// API access token entry
 #[derive(Debug, Clone, Deserialize)]
 pub struct ApiToken {
-    /// 令牌值（如 sk-xxx）
+    /// Secret value (e.g. `sk-...`)
     pub token: String,
-    /// 描述说明
+    /// Human-readable label
     #[serde(default)]
     pub description: String,
 }
 
-/// 默认 API 基础地址
+/// Default DeepSeek API base URL
 fn default_api_base() -> String {
     "https://chat.deepseek.com/api/v0".to_string()
 }
 
-/// 默认 WASM 文件 URL（版本号可能变动，建议配置文件中显式指定）
+/// Default WASM asset URL (version may change; prefer setting this explicitly in config)
 fn default_wasm_url() -> String {
     "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm".to_string()
 }
 
-/// 默认 User-Agent
+/// Default `User-Agent`
 fn default_user_agent() -> String {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36".to_string()
 }
 
-/// 默认 X-Client-Version
+/// Default `X-Client-Version`
 fn default_client_version() -> String {
     "1.8.0".to_string()
 }
 
-/// 默认 X-Client-Platform
+/// Default `X-Client-Platform`
 fn default_client_platform() -> String {
     "web".to_string()
 }
 
 impl Config {
-    /// 从指定路径加载配置
+    /// Load configuration from a file path
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let content = std::fs::read_to_string(path)?;
         let config: Self = toml::de::from_str(&content)?;
@@ -157,19 +157,21 @@ impl Config {
         Ok(config)
     }
 
-    /// 解析命令行参数并加载配置
+    /// Parse CLI arguments and load configuration
     ///
-    /// 支持 `-c <path>` 指定配置文件路径，默认使用 `config.toml`
+    /// Supports `-c <path>` to choose a config file; defaults to `config.toml`
     pub fn load_with_args(args: impl Iterator<Item = String>) -> Result<Self, ConfigError> {
         let mut config_path = None;
-        let mut iter = args.skip(1); // 跳过程序名
+        let mut iter = args.skip(1); // skip argv[0]
 
         while let Some(arg) = iter.next() {
             if arg == "-c" {
                 if let Some(path) = iter.next() {
                     config_path = Some(path);
                 } else {
-                    return Err(ConfigError::Cli("-c 参数需要指定路径".to_string()));
+                    return Err(ConfigError::Cli(
+                        "-c requires a path argument".to_string(),
+                    ));
                 }
             }
         }
@@ -178,25 +180,29 @@ impl Config {
         Self::load(&path)
     }
 
-    /// 验证配置有效性
+    /// Validate configuration invariants
     fn validate(&self) -> Result<(), ConfigError> {
         if self.accounts.is_empty() {
-            return Err(ConfigError::Validation("至少需要一个账号配置".to_string()));
+            return Err(ConfigError::Validation(
+                "at least one account entry is required".to_string(),
+            ));
         }
         if self.deepseek.model_types.is_empty() {
-            return Err(ConfigError::Validation("model_types 不能为空".to_string()));
+            return Err(ConfigError::Validation(
+                "model_types cannot be empty".to_string(),
+            ));
         }
         let n = self.deepseek.model_types.len();
         if self.deepseek.max_input_tokens.len() != n {
             return Err(ConfigError::Validation(format!(
-                "max_input_tokens 长度({})必须与 model_types 长度({})一致",
+                "max_input_tokens length ({}) must match model_types length ({})",
                 self.deepseek.max_input_tokens.len(),
                 n
             )));
         }
         if self.deepseek.max_output_tokens.len() != n {
             return Err(ConfigError::Validation(format!(
-                "max_output_tokens 长度({})必须与 model_types 长度({})一致",
+                "max_output_tokens length ({}) must match model_types length ({})",
                 self.deepseek.max_output_tokens.len(),
                 n
             )));
@@ -205,15 +211,15 @@ impl Config {
     }
 }
 
-/// 配置加载错误类型
+/// Errors produced while loading or validating configuration
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("IO 错误: {0}")]
+    #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("TOML 解析错误: {0}")]
+    #[error("TOML parse error: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("配置验证错误: {0}")]
+    #[error("configuration validation error: {0}")]
     Validation(String),
-    #[error("命令行参数错误: {0}")]
+    #[error("CLI argument error: {0}")]
     Cli(String),
 }

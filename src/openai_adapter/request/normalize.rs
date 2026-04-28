@@ -1,6 +1,6 @@
-//! 请求校验与默认值收敛
+//! Request validation and default normalization.
 //!
-//! 职责：验证必填字段、消息格式，并将可选参数收敛为内部使用的标准化值。
+//! Validates required fields and message shape, then projects optional inputs into a small internal struct.
 
 use crate::openai_adapter::types::{ChatCompletionRequest, StopSequence};
 
@@ -11,34 +11,32 @@ pub struct NormalizedParams {
     pub stop: Vec<String>,
 }
 
-/// 收敛并返回标准化参数
+/// Normalize `stream`/`stop`/`stream_options` and surface validation errors.
 ///
-/// 校验规则：
-/// - model 不能为空
-/// - messages 不能为空
-/// - role=tool 的消息必须包含 tool_call_id
-/// - role=function 的消息必须包含 name
+/// Rules:
+/// - `model` must be non-empty
+/// - `messages` must be non-empty
+/// - `role=tool` messages require `tool_call_id`
+/// - `role=function` messages require `name`
 pub fn apply(req: &ChatCompletionRequest) -> Result<NormalizedParams, String> {
     if req.model.trim().is_empty() {
-        return Err("缺少必填字段 'model'".into());
+        return Err("missing required field 'model'".into());
     }
 
     if req.messages.is_empty() {
-        return Err("缺少必填字段 'messages'".into());
+        return Err("missing required field 'messages'".into());
     }
 
     for (i, msg) in req.messages.iter().enumerate() {
         match msg.role.as_str() {
             "tool" if msg.tool_call_id.is_none() => {
                 return Err(format!(
-                    "messages[{}] 角色为 'tool' 时必须提供 'tool_call_id'",
-                    i
+                    "messages[{i}] with role 'tool' must include 'tool_call_id'",
                 ));
             }
             "function" if msg.name.is_none() => {
                 return Err(format!(
-                    "messages[{}] 角色为 'function' 时必须提供 'name'",
-                    i
+                    "messages[{i}] with role 'function' must include 'name'",
                 ));
             }
             _ => {}

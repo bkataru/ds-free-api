@@ -1,17 +1,17 @@
-//! openai_adapter 交互式 CLI 测试工具
+//! Interactive CLI harness for `openai_adapter`
 //!
-//! 使用方式:
-//!   交互模式: cargo run --example openai_adapter_cli
-//!   脚本模式: cargo run --example openai_adapter_cli -- source examples/openai_adapter_cli-script.txt
+//! Usage:
+//!   Interactive: `cargo run --example openai_adapter_cli`
+//!   Script: `cargo run --example openai_adapter_cli -- source examples/openai_adapter_cli-script.txt`
 //!
-//! 命令:
-//!   chat <json_file> [--raw]               - 读取标准 OpenAI JSON body，内部按 stream 字段路由
-//!   concurrent <n> <json_file> [--raw]     - 并发 chat
-//!   models                                 - 列出可用模型
-//!   model <id>                             - 查询单个模型
-//!   status                                 - 查看 ds_core 账号池状态
-//!   source <file>                          - 从文件读取命令执行
-//!   quit | exit                            - 退出并清理
+//! Commands:
+//!   chat <json_file> [--raw]               - load a standard OpenAI JSON body and route via `stream`
+//!   concurrent <n> <json_file> [--raw]     - concurrent chat requests
+//!   models                                 - list advertised models
+//!   model <id>                             - fetch metadata for one model id
+//!   status                                 - inspect the underlying `ds_core` account pool
+//!   source <file>                          - execute commands loaded from disk
+//!   quit | exit                            - exit and shut down cleanly
 
 use bytes::Bytes;
 use ds_free_api::{Config, OpenAIAdapter, StreamResponse};
@@ -19,7 +19,7 @@ use futures::{StreamExt, future::join_all};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-/// 读取一行输入，允许无效的 UTF-8
+/// Read one line from stdin while tolerating invalid UTF-8
 fn read_line_lossy() -> io::Result<String> {
     let mut buf = Vec::new();
     let stdin = io::stdin();
@@ -49,10 +49,10 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::new().default_filter_or("info")).init();
 
     let config = Config::load_with_args(std::env::args())?;
-    println!("[初始化中...]");
+    println!("[Starting...]");
     let adapter = OpenAIAdapter::new(&config).await?;
     println!(
-        "[就绪] 命令: chat <json> [--raw] | concurrent <n> <json> [--raw] | models | model | status | source | quit"
+        "[Ready] commands: chat <json> [--raw] | concurrent <n> <json> [--raw] | models | model | status | source | quit"
     );
 
     let mut stdout = io::stdout();
@@ -72,14 +72,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("[清理中...]");
+    println!("[Shutting down...]");
     adapter.shutdown().await;
-    println!("[已关闭]");
+    println!("[Stopped]");
 
     Ok(())
 }
 
-/// 解析命令行参数，提取位置参数和 --raw flag
+/// Split positional tokens from `--raw` / `-r` trailing flags
 fn parse_args<'a>(parts: &'a [&'a str]) -> (Vec<&'a str>, bool) {
     let raw = parts.iter().any(|p| *p == "--raw" || *p == "-r");
     let positional: Vec<_> = parts
@@ -99,7 +99,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
     let cmd = parts[0];
     match cmd {
         "status" => {
-            println!("[账号状态]");
+            println!("[Accounts]");
             for (i, s) in adapter.account_statuses().iter().enumerate() {
                 let email = if s.email.is_empty() { "-" } else { &s.email };
                 let mobile = if s.mobile.is_empty() { "-" } else { &s.mobile };
@@ -111,13 +111,13 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
             let (positional, raw) = parse_args(&parts);
             let file = positional[1];
             if !Path::new(file).exists() {
-                eprintln!("[错误] 文件不存在: {}", file);
+                eprintln!("[error] file not found: {}", file);
                 return Ok(false);
             }
             let body = std::fs::read_to_string(file)?;
-            println!(">>> 请求: {}", file);
+            println!(">>> request file: {}", file);
             if let Err(e) = run_chat(adapter, body.as_bytes(), raw).await {
-                eprintln!("[请求失败] {}", e);
+                eprintln!("[request failed] {}", e);
             }
         }
 
@@ -126,17 +126,17 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
             let count: usize = match positional[1].parse() {
                 Ok(n) if n > 0 => n,
                 _ => {
-                    eprintln!("[错误] 并发数必须是正整数");
+                    eprintln!("[error] concurrency count must be a positive integer");
                     return Ok(false);
                 }
             };
             let file = positional[2];
             if !Path::new(file).exists() {
-                eprintln!("[错误] 文件不存在: {}", file);
+                eprintln!("[error] file not found: {}", file);
                 return Ok(false);
             }
             let body = std::fs::read_to_string(file)?;
-            println!(">>> 并发请求: count={}, file={}", count, file);
+            println!(">>> concurrent: count={}, file={}", count, file);
             run_concurrent(adapter, count, body, raw).await;
         }
 
@@ -156,10 +156,10 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
         "source" if parts.len() == 2 => {
             let file = parts[1];
             if !Path::new(file).exists() {
-                eprintln!("[错误] 文件不存在: {}", file);
+                eprintln!("[error] file not found: {}", file);
                 return Ok(false);
             }
-            println!("[执行脚本: {}]", file);
+            println!("[Running script: {}]", file);
             let content = std::fs::read_to_string(file)?;
             for script_line in content.lines() {
                 let script_line = script_line.trim();
@@ -171,17 +171,17 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
                     return Ok(true);
                 }
             }
-            println!("[脚本执行完毕]");
+            println!("[Script finished]");
         }
 
         "quit" | "exit" => {
-            println!("[退出]");
+            println!("[Exiting]");
             return Ok(true);
         }
 
         _ => {
             println!(
-                "[未知命令: {}] 可用: chat | concurrent | models | model | status | source | quit",
+                "[unknown command: {}] available: chat | concurrent | models | model | status | source | quit",
                 cmd
             );
         }
@@ -190,7 +190,7 @@ async fn handle_line(line: &str, adapter: &OpenAIAdapter) -> anyhow::Result<bool
     Ok(false)
 }
 
-/// 判断请求体是否要求流式
+/// Return true when JSON body asks for streaming completions
 fn is_stream(body: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
@@ -198,7 +198,7 @@ fn is_stream(body: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-/// 执行单次 chat，根据 stream 字段路由，raw 控制输出格式
+/// Dispatch a `/v1/chat/completions` body; `--raw` controls printing
 async fn run_chat(adapter: &OpenAIAdapter, body: &[u8], raw: bool) -> anyhow::Result<()> {
     if is_stream(body) {
         let mut stream = adapter.chat_completions_stream(body).await?;
@@ -214,7 +214,7 @@ async fn run_chat(adapter: &OpenAIAdapter, body: &[u8], raw: bool) -> anyhow::Re
     Ok(())
 }
 
-/// 打印非流式响应的简化摘要
+/// Pretty-print the interesting fields for a buffered JSON completion
 fn print_chat_summary(json: &[u8]) {
     let v: serde_json::Value = match serde_json::from_slice(json) {
         Ok(val) => val,
@@ -261,7 +261,6 @@ fn print_chat_summary(json: &[u8]) {
     );
 }
 
-/// 消费流式响应，raw 控制输出格式
 async fn print_stream(stream: &mut StreamResponse, raw: bool) {
     let mut stdout = io::stdout();
     while let Some(res) = stream.next().await {
@@ -275,7 +274,7 @@ async fn print_stream(stream: &mut StreamResponse, raw: bool) {
                 }
             }
             Err(e) => {
-                eprintln!("\n[流错误] {}", e);
+                eprintln!("\n[stream error] {}", e);
                 break;
             }
         }
@@ -285,7 +284,7 @@ async fn print_stream(stream: &mut StreamResponse, raw: bool) {
     }
 }
 
-/// 打印单个流式 chunk 的简化摘要
+/// Summarize each SSE chunk for readability (non `--raw` mode)
 fn print_stream_chunk(bytes: &Bytes) {
     let text = String::from_utf8_lossy(bytes);
     let json_str = text
@@ -315,7 +314,7 @@ fn print_stream_chunk(bytes: &Bytes) {
         .and_then(|f| f.as_str());
     let usage = v.get("usage");
 
-    // usage chunk（空 choices）单独处理
+    // Usage-only SSE events (empty `choices`) are handled separately.
     if choice.is_none() || usage.is_some() {
         if let Some(u) = usage {
             println!("[usage] {}", u);
@@ -345,7 +344,6 @@ fn print_stream_chunk(bytes: &Bytes) {
     }
 }
 
-/// 执行并发请求
 async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: String, raw: bool) {
     let start = std::time::Instant::now();
     let body_bytes = body_template.into_bytes();
@@ -398,7 +396,7 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: St
                                         }
                                     }
                                     Err(e) => {
-                                        eprintln!("\n[请求{} 流错误] {}", i, e);
+                                        eprintln!("\n[request {} stream error] {}", i, e);
                                         ok = false;
                                         break;
                                     }
@@ -407,7 +405,7 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: St
                             (i, ok, output, req_start.elapsed())
                         }
                         Err(e) => {
-                            eprintln!("[请求{} 失败] {}", i, e);
+                            eprintln!("[request {} failed] {}", i, e);
                             (i, false, String::new(), req_start.elapsed())
                         }
                     }
@@ -443,7 +441,7 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: St
                             (i, true, output, req_start.elapsed())
                         }
                         Err(e) => {
-                            eprintln!("[请求{} 失败] {}", i, e);
+                            eprintln!("[request {} failed] {}", i, e);
                             (i, false, String::new(), req_start.elapsed())
                         }
                     }
@@ -456,25 +454,25 @@ async fn run_concurrent(adapter: &OpenAIAdapter, count: usize, body_template: St
     let results = join_all(futures).await;
     let total_elapsed = start.elapsed();
 
-    println!("\n[并发结果]");
+    println!("\n[Concurrent results]");
     let success_count = results.iter().filter(|(_, ok, _, _)| *ok).count();
     for (i, ok, output, elapsed) in results {
         let preview: String = output.chars().take(80).collect();
-        let status = if ok { "成功" } else { "失败" };
+        let status = if ok { "ok" } else { "fail" };
         println!(
-            "  [请求{:2}] {} | {:>12?} | {}",
+            "  [req {:2}] {} | {:>12?} | {}",
             i,
             status,
             elapsed,
             if preview.is_empty() {
-                "(无输出)".to_string()
+                "(no output)".to_string()
             } else {
                 format!("{}...", preview.replace('\n', " "))
             }
         );
     }
     println!(
-        "  总计: {}/{} 成功 | 总耗时 {:?}",
+        "  Total: {}/{} ok | elapsed {:?}",
         success_count, count, total_elapsed
     );
 }

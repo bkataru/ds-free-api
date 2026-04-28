@@ -1,4 +1,4 @@
-//! 对话请求编排 —— 调用 edit_message 返回 SSE 流
+//! Chat orchestration — wraps `edit_message` and returns an SSE byte stream.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -86,7 +86,7 @@ impl Completions {
         let token = account.token().to_string();
         let session_id = account
             .session_id(&req.model_type)
-            .expect("初始化时已保证存在该 model_type 的 session")
+            .expect("session for this model_type exists after pool init")
             .to_string();
 
         let pow_header = self.compute_pow(&token).await?;
@@ -118,7 +118,7 @@ impl Completions {
         self.pool.account_statuses()
     }
 
-    /// 优雅关闭：清理所有账号的 session
+    /// Graceful shutdown: delete sessions for every pooled account.
     pub async fn shutdown(&self) {
         self.pool.shutdown(&self.client).await;
     }

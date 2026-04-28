@@ -1,6 +1,6 @@
-//! HTTP 服务器层 —— 薄路由壳，暴露 OpenAIAdapter 与 AnthropicCompat 为 HTTP 接口
+//! HTTP server facade — thin router shell exposing `OpenAIAdapter` and `AnthropicCompat` as HTTP endpoints
 //!
-//! 本模块负责将 adapter / compat 层包装为 axum HTTP 服务。
+//! Wraps the adapter / compat layers in an axum HTTP service.
 
 mod error;
 mod handlers;
@@ -22,7 +22,7 @@ use crate::openai_adapter::OpenAIAdapter;
 
 use handlers::AppState;
 
-/// 启动 HTTP 服务器
+/// Start the HTTP server
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let adapter = Arc::new(OpenAIAdapter::new(&config).await?);
     let anthropic_compat = Arc::new(AnthropicCompat::new(Arc::clone(&adapter)));
@@ -34,21 +34,32 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let listener = TcpListener::bind(&addr).await?;
-    log::info!(target: "http::server", "openai兼容base_url: http://{}", addr);
-    log::info!(target: "http::server", "anthropic兼容base_url: http://{}/anthropic", addr);
+    log::info!(
+        target: "http::server",
+        "OpenAI-compatible base_url: http://{}",
+        addr
+    );
+    log::info!(
+        target: "http::server",
+        "Anthropic-compatible base_url: http://{}/anthropic",
+        addr
+    );
 
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    log::info!(target: "http::server", "HTTP 服务已停止，正在清理资源");
+    log::info!(
+        target: "http::server",
+        "HTTP server stopped; cleaning up resources"
+    );
     state.adapter.shutdown().await;
-    log::info!(target: "http::server", "清理完成");
+    log::info!(target: "http::server", "Cleanup complete");
 
     Ok(())
 }
 
-/// 构建路由器
+/// Build the router
 fn build_router(state: AppState, api_tokens: &[crate::config::ApiToken]) -> Router {
     let has_auth = !api_tokens.is_empty();
     let tokens: Vec<String> = api_tokens.iter().map(|t| t.token.clone()).collect();
@@ -78,7 +89,7 @@ fn build_router(state: AppState, api_tokens: &[crate::config::ApiToken]) -> Rout
     router
 }
 
-/// API Token 鉴权中间件
+/// API token authentication middleware
 async fn auth_middleware(req: Request, next: Next, tokens: Vec<String>) -> Response {
     let auth_header = req
         .headers()
@@ -101,7 +112,7 @@ async fn auth_middleware(req: Request, next: Next, tokens: Vec<String>) -> Respo
     next.run(req).await
 }
 
-/// 优雅关闭信号
+/// Graceful shutdown signal handler
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
@@ -125,5 +136,8 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    log::info!(target: "http::server", "收到关闭信号，开始优雅关闭");
+    log::info!(
+        target: "http::server",
+        "Shutdown signal received; starting graceful shutdown"
+    );
 }

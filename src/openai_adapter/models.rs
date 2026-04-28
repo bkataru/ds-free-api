@@ -1,13 +1,13 @@
-//! OpenAI 模型列表响应生成
+//! OpenAI-compatible `/models` list payload generation.
 //!
-//! 基于 DeepSeek model_types 静态生成 OpenAI /models 响应。
+//! Built statically from DeepSeek `model_types`.
 
 use crate::openai_adapter::types::{Model, ModelList};
 
 const MODEL_CREATED: u64 = 1_090_108_800;
 const MODEL_OWNED_BY: &str = "deepseek-web (proxied by https://github.com/NIyueeE)";
 
-/// 根据 model_types 生成模型列表 JSON
+/// Build the `/models` list JSON payload from configured `model_types`.
 pub fn list(
     model_types: &[String],
     max_input_tokens: &[u32],
@@ -42,7 +42,7 @@ pub fn list(
     .unwrap_or_else(|_| br#"{"object":"list","data":[]}"#.to_vec())
 }
 
-/// 查询单个模型
+/// Lookup a single model entry by external id (`deepseek-*`).
 pub fn get(
     model_types: &[String],
     max_input_tokens: &[u32],

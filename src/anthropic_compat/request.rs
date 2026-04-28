@@ -1,6 +1,6 @@
-//! Anthropic 请求映射 —— 将 Anthropic Messages 请求映射为 OpenAI ChatCompletion 请求
+//! Anthropic → OpenAI request mapping for `/v1/messages`.
 //!
-//! 不支持的字段（top_k、cache_control 等）兼容解析但不传入核心流程。
+//! Unsupported knobs (`top_k`, `cache_control`, …) deserialize for compatibility but are dropped before the core pipeline.
 
 #![allow(dead_code)]
 
@@ -12,10 +12,10 @@ use serde_json::json;
 use crate::anthropic_compat::AnthropicCompatError;
 
 // ============================================================================
-// Anthropic 请求类型
+// Anthropic Message API wire types
 // ============================================================================
 
-/// POST /v1/messages 请求体
+/// Incoming `POST /v1/messages` document.
 #[derive(Debug, Deserialize)]
 pub struct MessagesRequest {
     pub model: String,
@@ -44,11 +44,11 @@ pub struct MessagesRequest {
     pub metadata: Option<Metadata>,
     #[serde(default)]
     pub output_config: Option<OutputConfig>,
-    /// 智能搜索选项（Anthropic 协议扩展字段，映射为 OpenAI web_search_options）
+    /// Web search controls (Anthropic extension; forwarded as OpenAI `web_search_options` when present).
     #[serde(default)]
     pub web_search_options: Option<serde_json::Value>,
 
-    // 兼容字段：解析但不消费
+    // Accepted for forward compatibility — parsed but intentionally ignored downstream.
     #[serde(default)]
     pub cache_control: Option<CacheControlEphemeral>,
     #[serde(default)]
@@ -58,19 +58,19 @@ pub struct MessagesRequest {
     #[serde(default)]
     pub service_tier: Option<String>,
 
-    // 兜底
+    // Passthrough bucket for unknown keys.
     #[serde(flatten)]
     pub _extra: serde_json::Value,
 }
 
-/// 消息参数
+/// One role/content pair from the Anthropic `messages` array.
 #[derive(Debug, Deserialize, Clone)]
 pub struct MessageParam {
     pub role: String,
     pub content: MessageContent,
 }
 
-/// 消息内容：纯文本或内容块数组
+/// Either a plain string or a structured block list.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum MessageContent {
@@ -78,7 +78,7 @@ pub enum MessageContent {
     Blocks(Vec<ContentBlock>),
 }
 
-/// 内容块
+/// Anthropic multimodal / tool blocks.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
@@ -106,12 +106,12 @@ pub enum ContentBlock {
     RedactedThinking {
         data: String,
     },
-    // 其他类型（document / search_result / server_tool_use 等）直接忽略
+    // Everything else (documents, search results, server tools, …) is ignored.
     #[serde(other)]
     Other,
 }
 
-/// 图片源
+/// Inline image payload.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum ImageSource {
@@ -121,7 +121,7 @@ pub enum ImageSource {
     Url { url: String },
 }
 
-/// tool_result 内容：字符串或块数组
+/// `tool_result` body: string or nested blocks.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum ToolResultContent {
@@ -129,7 +129,7 @@ pub enum ToolResultContent {
     Blocks(Vec<ContentBlock>),
 }
 
-/// system 参数：字符串或文本块数组
+/// `system` prompt: string or structured blocks.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum SystemContent {
@@ -137,7 +137,7 @@ pub enum SystemContent {
     Blocks(Vec<SystemTextBlock>),
 }
 
-/// system 文本块（仅提取 text，忽略 cache_control / citations）
+/// Structured `system` block — we only keep `text` (ignores cache/citations metadata).
 #[derive(Debug, Deserialize, Clone)]
 pub struct SystemTextBlock {
     pub text: String,
@@ -145,7 +145,7 @@ pub struct SystemTextBlock {
     pub ty: String,
 }
 
-/// 工具联合类型
+/// Union of custom tools vs server-defined tools.
 #[derive(Debug, Clone)]
 pub enum ToolUnion {
     Custom {
@@ -154,7 +154,7 @@ pub enum ToolUnion {
         input_schema: serde_json::Value,
         strict: Option<bool>,
     },
-    // 服务器工具（bash / code_execution / web_search 等）忽略
+    // Server-managed tools (bash, code execution, web search, …) are ignored here.
     Other,
 }
 
@@ -193,7 +193,7 @@ impl<'de> serde::Deserialize<'de> for ToolUnion {
     }
 }
 
-/// tool_choice 参数
+/// Tool routing configuration.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum ToolChoice {
@@ -217,7 +217,7 @@ pub enum ToolChoice {
     None,
 }
 
-/// thinking 配置
+/// Extended thinking budget / display hints.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum ThinkingConfig {
@@ -236,14 +236,14 @@ pub enum ThinkingConfig {
     },
 }
 
-/// 请求元数据
+/// Optional request metadata.
 #[derive(Debug, Deserialize, Clone)]
 pub struct Metadata {
     #[serde(default)]
     pub user_id: Option<String>,
 }
 
-/// 输出配置
+/// Response shaping hints (effort, JSON schema, …).
 #[derive(Debug, Deserialize, Clone)]
 pub struct OutputConfig {
     #[serde(default)]
@@ -252,7 +252,7 @@ pub struct OutputConfig {
     pub format: Option<JsonOutputFormat>,
 }
 
-/// JSON 输出格式
+/// JSON schema contract for structured outputs.
 #[derive(Debug, Deserialize, Clone)]
 pub struct JsonOutputFormat {
     pub schema: serde_json::Value,
@@ -260,7 +260,7 @@ pub struct JsonOutputFormat {
     pub ty: String,
 }
 
-/// cache_control（兼容解析）
+/// `cache_control` (accepted for compatibility only).
 #[derive(Debug, Deserialize, Clone)]
 pub struct CacheControlEphemeral {
     #[serde(rename = "type")]
@@ -270,21 +270,21 @@ pub struct CacheControlEphemeral {
 }
 
 // ============================================================================
-// 映射函数
+// Mapping entry points
 // ============================================================================
 
-/// 将 Anthropic Messages 请求 JSON 映射为 OpenAI ChatCompletion 请求 JSON
+/// Convert an Anthropic Messages JSON payload into an OpenAI chat-completions JSON payload.
 pub fn to_openai_request(body: &[u8]) -> Result<Vec<u8>, AnthropicCompatError> {
     let req: MessagesRequest = serde_json::from_slice(body)
         .map_err(|e| AnthropicCompatError::BadRequest(format!("bad request: {}", e)))?;
-    debug!(target: "anthropic_compat::request", "解析成功: model={}, messages={}, stream={}", req.model, req.messages.len(), req.stream);
+    debug!(target: "anthropic_compat::request", "parsed request: model={}, messages={}, stream={}", req.model, req.messages.len(), req.stream);
 
     let mut openai = serde_json::Map::new();
 
     openai.insert("model".to_string(), json!(req.model));
     openai.insert("max_tokens".to_string(), json!(req.max_tokens));
 
-    // messages: system 前置 + messages 转换
+    // Prepend optional `system` content, then map each Anthropic message.
     let mut messages = Vec::new();
     if let Some(system) = req.system {
         messages.push(system_to_openai(&system));
@@ -316,7 +316,7 @@ pub fn to_openai_request(body: &[u8]) -> Result<Vec<u8>, AnthropicCompatError> {
         openai.insert("top_p".to_string(), json!(p));
     }
 
-    // top_k: 当前不映射到 OpenAI（OpenAI 无 top_k 参数）
+    // `top_k` has no OpenAI equivalent — drop it.
 
     // tools
     let mut parallel_tool_calls_disabled = false;
@@ -370,7 +370,7 @@ pub fn to_openai_request(body: &[u8]) -> Result<Vec<u8>, AnthropicCompatError> {
 }
 
 // ============================================================================
-// 辅助函数
+// Helpers
 // ============================================================================
 
 fn system_to_openai(system: &SystemContent) -> serde_json::Value {
@@ -397,17 +397,17 @@ fn message_param_to_openai(msg: &MessageParam) -> Vec<serde_json::Value> {
         "assistant" => assistant_blocks_to_openai(blocks),
         "user" => user_blocks_to_openai(blocks),
         _ => {
-            // 其他 role 直接当作文本处理
+            // Non-standard roles stringify into generic user/assistant content.
             let text = extract_text_from_blocks(blocks);
             vec![json!({"role": msg.role, "content": text})]
         }
     }
 }
 
-/// 将 assistant 的 content blocks 映射为 OpenAI 消息
-/// - text -> content
-/// - tool_use -> tool_calls
-/// - thinking / redacted_thinking / other -> 跳过
+/// Map assistant blocks into a single OpenAI assistant message.
+/// - `text` aggregates into `content`
+/// - `tool_use` becomes parallel `tool_calls`
+/// - Thinking / images / tool results / unknown blocks are ignored
 fn assistant_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
     let mut texts = Vec::new();
     let mut tool_calls = Vec::new();
@@ -450,11 +450,11 @@ fn assistant_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value>
     vec![json!(msg)]
 }
 
-/// 将 user 的 content blocks 映射为 OpenAI 消息
-/// - text -> text content
-/// - image -> image_url content parts
-/// - tool_result -> tool role message(s)
-/// - thinking / other -> 跳过
+/// Map user blocks into one or more OpenAI-compatible messages.
+/// - Inline text merges into `content`
+/// - Images become `image_url` parts when present
+/// - Tool results synthesize standalone `tool` role messages
+/// - Thinking and unknown blocks are ignored
 fn user_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
     let mut text_parts = Vec::new();
     let mut image_parts = Vec::new();
@@ -496,13 +496,13 @@ fn user_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
 
     let mut result = Vec::new();
 
-    // 文本 + 图片合并为一个 user message
+    // Fold text plus inline images into a single user message.
     if !text_parts.is_empty() || !image_parts.is_empty() {
         if image_parts.is_empty() {
-            // 纯文本：合并为单个字符串
+            // Pure text shards merge via `join("\n")`.
             result.push(json!({"role": "user", "content": text_parts.join("\n")}));
         } else {
-            // 包含图片：使用 parts 数组
+            // Images require a multimodal parts array.
             let mut parts = Vec::new();
             for text in &text_parts {
                 parts.push(json!({"type": "text", "text": text}));
@@ -514,7 +514,7 @@ fn user_blocks_to_openai(blocks: &[ContentBlock]) -> Vec<serde_json::Value> {
         }
     }
 
-    // tool_result 作为独立的 tool role messages
+    // Each `tool_result` becomes its own `role: "tool"` message.
     result.extend(tool_results);
 
     result
@@ -582,7 +582,7 @@ impl ToolChoice {
 }
 
 // ============================================================================
-// 测试
+// Tests
 // ============================================================================
 
 #[cfg(test)]
@@ -651,7 +651,7 @@ mod tests {
         }"#;
 
         let openai = parse_openai(&to_openai_request(body).unwrap());
-        // 多文本块合并为单个字符串
+        // Collapse multiple plaintext blocks before routing.
         assert_eq!(openai["messages"][0]["content"], "Hello\nWorld");
     }
 

@@ -1,6 +1,6 @@
-//! Anthropic 响应映射 —— 将 OpenAI ChatCompletion 映射为 Anthropic Message
+//! Anthropic response mapping — convert OpenAI chat completions back into Anthropic `Message`s.
 //!
-//! 门面模块：定义共享类型，声明子模块。
+//! Facade module: shared structs plus submodule wiring.
 
 mod aggregate;
 mod stream;
@@ -10,7 +10,7 @@ pub(crate) use stream::from_chat_completion_stream;
 
 use serde::{Deserialize, Serialize};
 
-/// Anthropic 非流式消息响应（流式的 message_start 也复用此结构）
+/// Canonical Anthropic assistant payload (`message`). Reused by `message_start` when streaming too.
 #[derive(Debug, Serialize)]
 pub struct Message {
     pub id: String,
@@ -26,7 +26,7 @@ pub struct Message {
     pub usage: Usage,
 }
 
-/// Content block 变体
+/// Serialized `content` union variants.
 #[derive(Debug, Serialize, Clone)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
@@ -45,7 +45,7 @@ pub enum ContentBlock {
     },
 }
 
-/// Token 用量
+/// Prompt/completion token accounting.
 #[derive(Debug, Serialize, Clone)]
 pub struct Usage {
     pub input_tokens: u32,
@@ -53,7 +53,7 @@ pub struct Usage {
 }
 
 // ============================================================================
-// 共享反序列化类型（OpenAI 极简结构）
+// Shared OpenAI completion mirror types (minimal deserialization surface)
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
@@ -113,7 +113,7 @@ pub(crate) struct OpenAiUsage {
 }
 
 // ============================================================================
-// 共享辅助函数
+// Shared helpers
 // ============================================================================
 
 pub(crate) fn finish_reason_map(reason: &str) -> String {
@@ -124,7 +124,7 @@ pub(crate) fn finish_reason_map(reason: &str) -> String {
     }
 }
 
-/// OpenAI id 格式为 chatcmpl-xxx，映射为 msg_xxx
+/// Rewrite OpenAI ids (`chatcmpl-*`) into Anthropic-ish `msg_*` handles.
 pub(crate) fn map_id(openai_id: &str) -> String {
     if let Some(hex) = openai_id.strip_prefix("chatcmpl-") {
         format!("msg_{}", hex)

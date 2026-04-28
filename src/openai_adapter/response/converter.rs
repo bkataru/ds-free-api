@@ -1,10 +1,25 @@
-//! OpenAI Chunk 生成器 —— 将 DsFrame 映射为 ChatCompletionChunk
+//! Streaming chunk projector — converts `DsFrame`s into OpenAI-compatible `chat.completion.chunk` payloads.
+//!
+//! Ordering rules (tools_present parity):
+//!
+//! - `tools_present=false`: stream `reasoning_content` deltas verbatim (Anthropic-compatible thinking channel).
+//!
+//! - `tools_present=true`: buffer THINK deltas into `buffered_reasoning`. When RESPONSE text arrives or the stream finishes,
+//!   merge buffered reasoning ahead of ordinary assistant content so tooling requests never emit an empty `choices` shard
+//!   ahead of streamed JSON tool calls downstream.
+//!
+//! - `pending_reasoning_flush` coordinates the rare case where `include_usage=true` forces a usage-only chunk (`choices=[]`)
+//!   before the merged reasoning/content pair is safe to flush. Finish handling sets this latch when usage preempts deltas.
+//!
+//! - Finalization always prefers draining buffered reasoning (if any), then emits `finish_reason`, then optional trailing usage.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::Stream;
 use pin_project_lite::pin_project;
+
+use log::trace;
 
 use crate::openai_adapter::OpenAIAdapterError;
 use crate::openai_adapter::types::{ChatCompletionChunk, ChunkChoice, Delta, Usage};
@@ -35,7 +50,7 @@ fn make_usage(prompt_tokens: u32, completion_tokens: u32) -> Usage {
     }
 }
 
-fn make_chunk(model: &str, delta: Delta, finish: Option<&'static str>) -> ChatCompletionChunk {
+pub(crate) fn make_chunk(model: &str, delta: Delta, finish: Option<&'static str>) -> ChatCompletionChunk {
     ChatCompletionChunk {
         id: next_chatcmpl_id(),
         object: "chat.completion.chunk",
@@ -55,7 +70,7 @@ fn make_chunk(model: &str, delta: Delta, finish: Option<&'static str>) -> ChatCo
 
 pin_project! {
     #[allow(unused_doc_comments)]
-    /// 将 DsFrame 增量帧映射为 OpenAI ChatCompletionChunk 的流转换器
+    /// Adapter stream that folds `DsFrame` emissions into chunked OpenAI deltas
     pub struct ConverterStream<S> {
         #[pin]
         inner: S,
@@ -73,7 +88,7 @@ pin_project! {
 }
 
 impl<S> ConverterStream<S> {
-    /// 创建 Chunk 转换流
+    /// Build a chunked encoder around an upstream DeepSeek patch stream.
     pub fn new(
         inner: S,
         model: String,
@@ -107,7 +122,7 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        // 如果已结束且有待发 usage，优先发送
+        // When upstream already signaled completion but usage waited, flush usage chunks first.
         if *this.finished
             && *this.include_usage
             && let Some(u) = this.usage_value.take()
@@ -122,6 +137,7 @@ where
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(frame))) => match frame {
                     DsFrame::Role => {
+                        trace!(target: "adapter", ">>> conv: role=assistant");
                         return Poll::Ready(Some(Ok(make_chunk(
                             this.model,
                             Delta {
@@ -132,6 +148,7 @@ where
                         ))));
                     }
                     DsFrame::ThinkDelta(text) => {
+                        trace!(target: "adapter", ">>> conv: think delta len={} tools_present={}", text.len(), *this.tools_present);
                         if *this.tools_present {
                             // Buffer reasoning for later prepending to content
                             this.buffered_reasoning.push_str(&text);
@@ -148,6 +165,7 @@ where
                         ))));
                     }
                     DsFrame::ContentDelta(text) => {
+                        trace!(target: "adapter", ">>> conv: content delta len={} buf_len={}", text.len(), this.buffered_reasoning.len());
                         let content = if !this.buffered_reasoning.is_empty() {
                             let combined = format!("{}{}", *this.buffered_reasoning, text);
                             this.buffered_reasoning.clear();
@@ -165,6 +183,7 @@ where
                         ))));
                     }
                     DsFrame::Status(status) if status == "FINISHED" && !*this.finished => {
+                        trace!(target: "adapter", ">>> conv: finish=stop status buf_len={}", this.buffered_reasoning.len());
                         // Flush any buffered reasoning as content before finishing
                         if !this.buffered_reasoning.is_empty() {
                             let buffered = std::mem::take(this.buffered_reasoning);
@@ -187,6 +206,7 @@ where
                     }
                     DsFrame::Status(_) => {}
                     DsFrame::Usage(u) => {
+                        trace!(target: "adapter", ">>> conv: usage={} finished={} include_usage={}", u, *this.finished, *this.include_usage);
                         *this.usage_value = Some(u);
                         if *this.finished && *this.include_usage {
                             return Poll::Ready(Some(Ok(make_usage_chunk(
@@ -196,6 +216,7 @@ where
                         }
                     }
                     DsFrame::Finish if !*this.finished => {
+                        trace!(target: "adapter", ">>> conv: finish=stop pending_flush={} tools_present={}", *this.pending_reasoning_flush, *this.tools_present);
                         *this.finished = true;
                         // Emit pending usage before finishing
                         if *this.include_usage {
@@ -232,6 +253,7 @@ where
                 },
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
                 Poll::Ready(None) => {
+                    trace!(target: "adapter", ">>> conv: stream_end pending_flush={} pending_finish={} buf_len={}", *this.pending_reasoning_flush, *this.pending_finish, this.buffered_reasoning.len());
                     // First, check if we need to flush reasoning (after usage was emitted)
                     if *this.pending_reasoning_flush {
                         *this.pending_reasoning_flush = false;

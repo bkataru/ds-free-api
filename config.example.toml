@@ -2,26 +2,26 @@
 host = "127.0.0.1"
 port = 5317
 
-# API 访问令牌，留空则不鉴权
+# API access tokens; leave empty to disable authentication
 # [[server.api_tokens]]
 # token = "sk-your-token"
-# description = "开发测试"
+# description = "local dev"
 
-# 邮箱登录示例
+# Email login example
 [[accounts]]
 email = "user1@example.com"
 mobile = ""
 area_code = ""
 password = "pass1"
 
-# 中国手机号登录示例
+# China mobile login example
 [[accounts]]
 email = ""
 mobile = "13800138000"
 area_code = "+86"
 password = "pass2"
 
-# 国际手机号登录示例
+# International mobile login example
 [[accounts]]
 email = ""
 mobile = "1234567890"
@@ -29,23 +29,23 @@ area_code = "+1"
 password = "pass3"
 
 [deepseek]
-# 已验证通过的 User-Agent
+# Known-good User-Agent
 # user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 
-# API 基础地址（默认）
+# API base URL (default)
 # api_base = "https://chat.deepseek.com/api/v0"
 
-# WASM 文件完整 URL（PoW 计算所需，版本号会变动，建议手动更新）
+# Full WASM asset URL (required for PoW; version changes — update manually)
 # wasm_url = "https://fe-static.deepseek.com/chat/static/sha3_wasm_bg.7b9ca65ddd.wasm"
 
-# X-Client-Version 请求头（用于 expert 模型等功能）
+# X-Client-Version header (expert model features, etc.)
 # client_version = "1.8.0"
 
-# X-Client-Platform 请求头
+# X-Client-Platform header
 # client_platform = "web"
 
-# 支持的模型类型列表，默认值为 ["default", "expert"]
-# 每种类型会自动映射为 OpenAI 的 model_id：deepseek-<type>
+# Supported model types; default ["default", "expert"]
+# Each type maps to an OpenAI model id: deepseek-<type>
 # model_types = ["default", "expert"]
 # max_input_tokens = [1048576, 1048576]
 # max_output_tokens = [384000, 384000]

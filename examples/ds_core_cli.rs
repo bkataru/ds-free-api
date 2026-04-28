@@ -1,16 +1,16 @@
-//! ds-core 交互式 CLI 测试工具
+//! Interactive CLI harness for `ds-core`
 //!
-//! 使用方式:
-//!   交互模式: cargo run --example ds_core_cli
-//!   脚本模式: cargo run --example ds_core_cli -- source examples/ds_core_cli-script.txt
+//! Usage:
+//!   Interactive: `cargo run --example ds_core_cli`
+//!   Script: `cargo run --example ds_core_cli -- source examples/ds_core_cli-script.txt`
 //!
-//! 命令:
-//!   status                              - 查看所有账号状态
-//!   model <type>                        - 切换当前模型类型 (默认取 config 第一项)
-//!   chat <prompt> [thinking] [search] [--raw]   - 发送对话 (t=thinking, s=search, 默认 false)
-//!   concurrent <n> <prompt> [t] [s] [--raw]     - 并发发送 n 个请求
-//!   source <file>                                - 从文件读取命令执行
-//!   quit | exit                                  - 退出并清理
+//! Commands:
+//!   status                              - show all account statuses
+//!   model <type>                        - switch model type (defaults to first entry in config)
+//!   chat <prompt> [thinking] [search] [--raw]   - send chat (`t`=thinking, `s`=search; default false)
+//!   concurrent <n> <prompt> [t] [s] [--raw]     - run `n` concurrent requests
+//!   source <file>                                - execute commands read from file
+//!   quit | exit                                  - exit and tear down resources
 
 use bytes::Bytes;
 use ds_free_api::{ChatRequest, Config, DeepSeekCore};
@@ -18,7 +18,7 @@ use futures::{StreamExt, future::join_all};
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-/// 读取一行输入，允许无效的 UTF-8
+/// Read one line from stdin while tolerating invalid UTF-8
 fn read_line_lossy() -> io::Result<String> {
     let mut buf = Vec::new();
     let stdin = io::stdin();
@@ -54,9 +54,9 @@ async fn main() -> anyhow::Result<()> {
         .first()
         .cloned()
         .unwrap_or_else(|| "default".to_string());
-    println!("[初始化中...]");
+    println!("[Starting...]");
     let core = DeepSeekCore::new(&config).await?;
-    println!("[就绪] 命令: status | model | chat | concurrent <n> | source | quit");
+    println!("[Ready] commands: status | model | chat | concurrent <n> | source | quit");
 
     let mut stdout = io::stdout();
 
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
         match cmd {
             "status" => {
-                println!("[账号状态]");
+                println!("[Accounts]");
                 for (i, s) in core.account_statuses().iter().enumerate() {
                     let email = if s.email.is_empty() { "-" } else { &s.email };
                     let mobile = if s.mobile.is_empty() { "-" } else { &s.mobile };
@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
             "model" if parts.len() >= 2 => {
                 current_model_type = parts[1].to_string();
-                println!("[当前模型已切换为: {}]", current_model_type);
+                println!("[Active model type: {}]", current_model_type);
             }
 
             "chat" if parts.len() >= 2 => {
@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
                 let (prompt, thinking, search) = parse_chat_args(rest);
 
                 println!(
-                    "[请求] prompt={:?}, model_type={}, thinking={}, search={}, raw={}",
+                    "[Request] prompt={:?}, model_type={}, thinking={}, search={}, raw={}",
                     prompt.chars().take(50).collect::<String>(),
                     current_model_type,
                     thinking,
@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
                 {
                     Ok(mut stream) => {
                         if raw {
-                            println!("[响应流开始 - raw]");
+                            println!("[Stream start - raw]");
                             while let Some(chunk) = stream.next().await {
                                 let chunk: Result<Bytes, ds_free_api::CoreError> = chunk;
                                 match chunk {
@@ -125,34 +125,34 @@ async fn main() -> anyhow::Result<()> {
                                         stdout.flush()?;
                                     }
                                     Err(e) => {
-                                        eprintln!("\n[流错误] {}", e);
+                                        eprintln!("\n[stream error] {}", e);
                                         break;
                                     }
                                 }
                             }
-                            println!("\n[响应流结束 - raw]");
+                            println!("\n[Stream end - raw]");
                         } else {
                             let mut output = String::new();
                             while let Some(chunk) = stream.next().await {
                                 match chunk {
                                     Ok(bytes) => output.push_str(&String::from_utf8_lossy(&bytes)),
                                     Err(e) => {
-                                        eprintln!("\n[流错误] {}", e);
+                                        eprintln!("\n[stream error] {}", e);
                                         break;
                                     }
                                 }
                             }
                             let preview: String = output.chars().take(300).collect();
                             let truncated = if output.len() > 300 {
-                                format!("{}... (完整 {} bytes)", preview, output.len())
+                                format!("{}... (full {} bytes)", preview, output.len())
                             } else {
                                 preview
                             };
-                            println!("[响应] {}", truncated);
+                            println!("[Response] {}", truncated);
                         }
                     }
                     Err(e) => {
-                        eprintln!("[请求失败] {}", e);
+                        eprintln!("[request failed] {}", e);
                     }
                 }
             }
@@ -161,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
                 let count: usize = match parts[1].parse() {
                     Ok(n) if n > 0 => n,
                     _ => {
-                        eprintln!("[错误] 并发数必须是正整数");
+                        eprintln!("[error] concurrency count must be a positive integer");
                         continue;
                     }
                 };
@@ -172,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
                 let (prompt, thinking, search) = parse_chat_args(rest);
 
                 println!(
-                    "[并发请求] count={}, model_type={}, prompt={:?}, thinking={}, search={}, raw={}",
+                    "[Concurrent request] count={}, model_type={}, prompt={:?}, thinking={}, search={}, raw={}",
                     count,
                     current_model_type,
                     prompt.chars().take(50).collect::<String>(),
@@ -196,10 +196,10 @@ async fn main() -> anyhow::Result<()> {
             "source" if parts.len() == 2 => {
                 let file = parts[1];
                 if !Path::new(file).exists() {
-                    eprintln!("[错误] 文件不存在: {}", file);
+                    eprintln!("[error] file not found: {}", file);
                     continue;
                 }
-                println!("[执行脚本: {}]", file);
+                println!("[Running script: {}]", file);
                 let content = std::fs::read_to_string(file)?;
                 for script_line in content.lines() {
                     let script_line = script_line.trim();
@@ -211,31 +211,31 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                 }
-                println!("[脚本执行完毕]");
+                println!("[Script finished]");
             }
 
             "quit" | "exit" => {
-                println!("[退出]");
+                println!("[Exiting]");
                 break;
             }
 
             _ => {
                 println!(
-                    "[未知命令: {}] 可用: status | model | chat | concurrent | source | quit",
+                    "[unknown command: {}] available: status | model | chat | concurrent | source | quit",
                     cmd
                 );
             }
         }
     }
 
-    println!("[清理中...]");
+    println!("[Shutting down...]");
     core.shutdown().await;
-    println!("[已关闭]");
+    println!("[Stopped]");
 
     Ok(())
 }
 
-/// 运行并发请求
+/// Run concurrent requests and print a compact summary table
 async fn run_concurrent(
     core: &DeepSeekCore,
     count: usize,
@@ -270,7 +270,7 @@ async fn run_concurrent(
                                     output.push_str(&String::from_utf8_lossy(&bytes));
                                 }
                                 Err(e) => {
-                                    eprintln!("\n[请求{} 流错误] {}", i, e);
+                                    eprintln!("\n[request {} stream error] {}", i, e);
                                     break;
                                 }
                             }
@@ -285,7 +285,7 @@ async fn run_concurrent(
                     }
                     Err(e) => {
                         let elapsed = req_start.elapsed();
-                        eprintln!("[请求{} 失败] {}", i, e);
+                        eprintln!("[request {} failed] {}", i, e);
                         (i, false, String::new(), 0, elapsed)
                     }
                 }
@@ -298,19 +298,19 @@ async fn run_concurrent(
 
     let success_count = results.iter().filter(|(_, ok, _, _, _)| *ok).count();
     for (i, ok, preview, total_len, elapsed) in results {
-        let status = if ok { "成功" } else { "失败" };
+        let status = if ok { "ok" } else { "fail" };
         let suffix = if ok && !raw && total_len > 80 {
             format!(" ({} bytes)", total_len)
         } else {
             String::new()
         };
         println!(
-            "  [请求{:2}] {} | {:>12?} | {}{}",
+            "  [req {:2}] {} | {:>12?} | {}{}",
             i,
             status,
             elapsed,
             if preview.is_empty() {
-                "(无输出)".to_string()
+                "(no output)".to_string()
             } else {
                 format!("{}...", preview.replace('\n', " "))
             },
@@ -318,12 +318,12 @@ async fn run_concurrent(
         );
     }
     println!(
-        "  总计: {}/{} 成功 | 总耗时 {:?}",
+        "  Total: {}/{} ok | elapsed {:?}",
         success_count, count, total_elapsed
     );
 }
 
-/// 解析 chat/concurrent 命令参数
+/// Parse arguments for `chat` / `concurrent`
 fn parse_chat_args(rest: &str) -> (String, bool, bool) {
     let tokens: Vec<&str> = rest.split_whitespace().collect();
 
@@ -352,7 +352,7 @@ fn parse_chat_args(rest: &str) -> (String, bool, bool) {
     (prompt, thinking, search)
 }
 
-/// 从命令尾部提取 --raw / -r flag
+/// Strip `--raw` / `-r` flags from the end of the command tail
 fn extract_raw_flag(rest: &str) -> (&str, bool) {
     let trimmed = rest.trim_end();
     if let Some(prefix) = trimmed.strip_suffix("--raw") {
@@ -375,7 +375,7 @@ fn parse_bool(s: &str) -> bool {
     matches!(s.to_lowercase().as_str(), "true" | "t" | "1")
 }
 
-/// 处理单行命令
+/// Dispatch a single line (also used by `source`)
 async fn handle_line(
     line: &str,
     core: &DeepSeekCore,
@@ -388,7 +388,7 @@ async fn handle_line(
 
     match parts[0] {
         "status" => {
-            println!("[账号状态]");
+            println!("[Accounts]");
             for (i, s) in core.account_statuses().iter().enumerate() {
                 let email = if s.email.is_empty() { "-" } else { &s.email };
                 let mobile = if s.mobile.is_empty() { "-" } else { &s.mobile };
@@ -398,7 +398,7 @@ async fn handle_line(
 
         "model" if parts.len() >= 2 => {
             *model_type = parts[1].to_string();
-            println!("[当前模型已切换为: {}]", model_type);
+            println!("[Active model type: {}]", model_type);
         }
 
         "chat" if parts.len() >= 2 => {
@@ -407,7 +407,7 @@ async fn handle_line(
             let (prompt, thinking, search) = parse_chat_args(rest);
 
             println!(
-                "[请求] prompt={:?}, model_type={}, thinking={}, search={}, raw={}",
+                "[Request] prompt={:?}, model_type={}, thinking={}, search={}, raw={}",
                 prompt.chars().take(50).collect::<String>(),
                 model_type,
                 thinking,
@@ -426,7 +426,7 @@ async fn handle_line(
             {
                 Ok(mut stream) => {
                     if raw {
-                        println!("[响应流开始 - raw]");
+                        println!("[Stream start - raw]");
                         let mut stdout = io::stdout();
                         while let Some(chunk) = stream.next().await {
                             let chunk: Result<Bytes, _> = chunk;
@@ -436,34 +436,34 @@ async fn handle_line(
                                     stdout.flush()?;
                                 }
                                 Err(e) => {
-                                    eprintln!("\n[流错误] {}", e);
+                                    eprintln!("\n[stream error] {}", e);
                                     break;
                                 }
                             }
                         }
-                        println!("\n[响应流结束 - raw]");
+                        println!("\n[Stream end - raw]");
                     } else {
                         let mut output = String::new();
                         while let Some(chunk) = stream.next().await {
                             match chunk {
                                 Ok(bytes) => output.push_str(&String::from_utf8_lossy(&bytes)),
                                 Err(e) => {
-                                    eprintln!("\n[流错误] {}", e);
+                                    eprintln!("\n[stream error] {}", e);
                                     break;
                                 }
                             }
                         }
                         let preview: String = output.chars().take(300).collect();
                         let truncated = if output.len() > 300 {
-                            format!("{}... (完整 {} bytes)", preview, output.len())
+                            format!("{}... (full {} bytes)", preview, output.len())
                         } else {
                             preview
                         };
-                        println!("[响应] {}", truncated);
+                        println!("[Response] {}", truncated);
                     }
                 }
                 Err(e) => {
-                    eprintln!("[请求失败] {}", e);
+                    eprintln!("[request failed] {}", e);
                 }
             }
         }
@@ -472,7 +472,7 @@ async fn handle_line(
             let count: usize = match parts[1].parse() {
                 Ok(n) if n > 0 => n,
                 _ => {
-                    eprintln!("[错误] 并发数必须是正整数");
+                    eprintln!("[error] concurrency count must be a positive integer");
                     return Ok(false);
                 }
             };
@@ -487,7 +487,7 @@ async fn handle_line(
 
         "quit" | "exit" => return Ok(true),
 
-        _ => println!("[未知命令: {}]", parts[0]),
+        _ => println!("[unknown command: {}]", parts[0]),
     }
 
     Ok(false)

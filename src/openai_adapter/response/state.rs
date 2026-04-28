@@ -1,4 +1,4 @@
-//! DeepSeek Patch 状态机 —— 解析 p/o/v 路径操作并产出增量帧
+//! DeepSeek incremental patch state machine (`p` / `o` / `v`) that emits adapter frames.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -13,20 +13,20 @@ use super::sse_parser::SseEvent;
 const FRAG_THINK: &str = "THINK";
 const FRAG_RESPONSE: &str = "RESPONSE";
 
-/// 从 DeepSeek 流中解析出的单帧增量
+/// Single normalized delta emitted downstream of the DeepSeek SSE stream.
 #[derive(Debug, Clone)]
 pub enum DsFrame {
-    /// event: ready，用于生成 delta.role = assistant
+    /// `event: ready` — seeds `delta.role = assistant`.
     Role,
-    /// THINK fragment 追加的文本
+    /// THINK shards — reasoning channel.
     ThinkDelta(String),
-    /// RESPONSE fragment 追加的文本
+    /// RESPONSE shards — outward assistant prose.
     ContentDelta(String),
-    /// response/status 变化
+    /// Mirrors `response/status` churn.
     Status(String),
-    /// accumulated_token_usage 数值
+    /// Numeric `accumulated_token_usage`.
     Usage(u32),
-    /// event: finish 或最终状态
+    /// Synthetic finish marker emitted on `finish` events or exhausted streams.
     Finish,
 }
 
@@ -36,7 +36,7 @@ struct Fragment {
     content: String,
 }
 
-/// 维护 DeepSeek 响应的 patch 状态，产出可供 converter 消费的增量帧
+/// Shared patch cursor that tracks streamed DeepSeek blobs.
 #[derive(Debug, Default)]
 pub struct DsState {
     current_path: Option<String>,
@@ -46,7 +46,7 @@ pub struct DsState {
 }
 
 impl DsState {
-    /// 消费一个 SSE 事件，返回零个或多个增量帧
+    /// Ingest another SSE stanza — returns zero-or-many frames for the converter tier.
     pub fn apply_event(&mut self, evt: &SseEvent) -> Vec<DsFrame> {
         let mut frames = Vec::new();
 
@@ -93,7 +93,7 @@ impl DsState {
             let path = self.current_path.clone().unwrap();
             frames.extend(self.apply_path(&path, Some("APPEND"), v));
         } else {
-            // 无 current_path 的纯 v 视为初始 snapshot
+            // Bare `{"v":...}` payloads without trailing `p` act as snapshots.
             if let Some(response) = v.get("response")
                 && let Some(arr) = response.get("fragments").and_then(|f| f.as_array())
             {
@@ -147,7 +147,7 @@ impl DsState {
                 }
             }
             "response/search_status" | "response/search_results" => {
-                // 当前忽略，未来可映射到 annotations
+                // Intentionally ignored for now — annotations hook lives higher in the stack.
             }
             "response/fragments/-1/content" => {
                 if let Some(s) = val.as_str()
@@ -163,13 +163,13 @@ impl DsState {
                             frames.push(DsFrame::ContentDelta(s.to_string()));
                         }
                         _ => {
-                            // TOOL_SEARCH / TOOL_OPEN 等内部片段不映射到用户可见文本
+                            // Internal helper fragments (`TOOL_SEARCH`, `TOOL_OPEN`, …) skip user-visible text.
                         }
                     }
                 }
             }
             "response/fragments/-1/elapsed_secs" => {
-                // 思考耗时，当前忽略
+                // Reasoning timings — noop for forwarding.
             }
             "response/fragments" if op == Some("APPEND") => {
                 if let Some(arr) = val.as_array() {
@@ -204,7 +204,7 @@ impl DsState {
 
 pin_project! {
     #[allow(unused_doc_comments)]
-    /// 对 SSE 事件流应用 patch 状态机的包装流
+    /// Stream adapter that multiplexes SSE events through `DsState` with tiny fan-out buffering.
     pub struct StateStream<S> {
         #[pin]
         inner: S,
@@ -214,7 +214,7 @@ pin_project! {
 }
 
 impl<S> StateStream<S> {
-    /// 创建状态流包装器
+    /// Construct a streamed patch interpreter.
     pub fn new(inner: S) -> Self {
         Self {
             inner,
@@ -247,7 +247,7 @@ where
                     }
                     let mut frames = frames;
                     let first = frames.remove(0);
-                    // 剩余帧按正序压入 pending（先压后出的会逆序，所以逆序 extend）
+                    // Remaining frames enqueue in FIFO order (`Vec` stack requires reverse push-order).
                     this.pending.extend(frames.into_iter().rev());
                     return Poll::Ready(Some(Ok(first)));
                 }
