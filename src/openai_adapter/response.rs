@@ -48,6 +48,7 @@ const OBFUSCATION_TARGET_LEN: usize = 512;
 const OBFUSCATION_MIN_PAD: usize = 16;
 const FINISH_STOP: &str = "stop";
 const FINISH_TOOL_CALLS: &str = "tool_calls";
+const MAX_TOOL_REPAIR_ATTEMPTS: usize = 10;
 
 fn random_padding(len: usize) -> String {
     if len == 0 {
@@ -157,6 +158,7 @@ pin_project! {
         inner: S,
         repair_fn: RepairFn,
         state: RepairState,
+        repair_attempts: usize,
     }
 }
 
@@ -166,6 +168,7 @@ impl<S> RepairStream<S> {
             inner,
             repair_fn,
             state: RepairState::Forwarding,
+            repair_attempts: 0,
         }
     }
 }
@@ -187,7 +190,14 @@ where
                     Poll::Ready(Some(Err(e))) => {
                         let e = e.into();
                         if let OpenAIAdapterError::ToolCallRepairNeeded(raw_xml) = e {
-                            warn!(target: "adapter", "RepairStream captured repair request: len={}", raw_xml.len());
+                            if *this.repair_attempts >= MAX_TOOL_REPAIR_ATTEMPTS {
+                                warn!(target: "adapter", "tool_calls repair budget exhausted: attempts={}, len={}", *this.repair_attempts, raw_xml.len());
+                                return Poll::Ready(Some(Err(OpenAIAdapterError::Internal(
+                                    "tool_calls repair budget exhausted".to_string(),
+                                ))));
+                            }
+                            *this.repair_attempts += 1;
+                            warn!(target: "adapter", "RepairStream captured repair request: len={}, attempt={}/{}", raw_xml.len(), *this.repair_attempts, MAX_TOOL_REPAIR_ATTEMPTS);
                             trace!(target: "adapter", ">>> repair: accepting raw_xml len={}", raw_xml.len());
                             let repair_fn = this.repair_fn.clone();
                             let future = (repair_fn)(raw_xml);
