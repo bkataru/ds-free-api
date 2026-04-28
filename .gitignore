@@ -16,3 +16,8 @@ config.toml
 **/tmp.*
 **/tmp_*
 **/tmp
+
+
+.deagle/
+.planning/codebase/UPSTREAM_A3E43DB_MERGE_ANALYSIS.md
+docs/superpowers/specs/2026-04-24-ds-free-api-reasoning-tools-compat-design.md
