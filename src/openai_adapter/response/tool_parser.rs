@@ -242,11 +242,10 @@ enum ToolParseState {
 }
 
 pin_project! {
-    #[allow(unused_doc_comments)]
-    /// Streaming adapter rewriting `choices[].delta.content` into structured `delta.tool_calls` surfaces.
-    ///
-    /// Applies a guarded UTF-8 window so chunked transcripts never drop split `<tool_calls>` tokens, then merges
-    /// JSON payloads into synthesized OpenAI deltas that align with downstream `tools_present` handling.
+    // Streaming adapter rewriting `choices[].delta.content` into structured `delta.tool_calls` surfaces.
+    //
+    // Applies a guarded UTF-8 window so chunked transcripts never drop split `<tool_call>` tokens, then merges
+    // JSON payloads into synthesized OpenAI deltas that align with downstream `tools_present` handling.
     pub struct ToolCallStream<S> {
         #[pin]
         inner: S,

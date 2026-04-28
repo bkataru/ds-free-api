@@ -215,8 +215,7 @@ impl DsState {
 }
 
 pin_project! {
-    #[allow(unused_doc_comments)]
-    /// Stream adapter that multiplexes SSE events through `DsState` with tiny fan-out buffering.
+    // Stream adapter that multiplexes SSE events through `DsState` with tiny fan-out buffering.
     pub struct StateStream<S> {
         #[pin]
         inner: S,

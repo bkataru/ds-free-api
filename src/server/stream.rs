@@ -10,10 +10,14 @@ use axum::{
 use bytes::Bytes;
 use futures::Stream;
 use futures::StreamExt;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
+use tokio::time::Sleep;
 
 /// SSE response body wrapper (generic)
 pub struct SseBody<S> {
-    inner: S,
+    inner: KeepaliveStream<S>,
     extra_headers: Vec<(String, String)>,
 }
 
@@ -23,8 +27,9 @@ where
     E: std::fmt::Display + Send + Sync + 'static,
 {
     pub fn new(stream: S) -> Self {
+        let inner = KeepaliveStream::new(stream);
         Self {
-            inner: stream,
+            inner,
             extra_headers: Vec::new(),
         }
     }
@@ -61,5 +66,64 @@ where
         }
 
         builder.body(body).unwrap().into_response()
+    }
+}
+
+// Injects SSE keepalive comments on idle to prevent connection timeout.
+pin_project_lite::pin_project! {
+    struct KeepaliveStream<S> {
+        #[pin]
+        inner: S,
+        #[pin]
+        timer: Sleep,
+        interval: Duration,
+        done: bool,
+    }
+}
+
+impl<S> KeepaliveStream<S> {
+    fn new(inner: S) -> Self {
+        Self {
+            inner,
+            timer: tokio::time::sleep(Duration::from_millis(1700)),
+            interval: Duration::from_millis(1700),
+            done: false,
+        }
+    }
+}
+
+impl<S, E> Stream for KeepaliveStream<S>
+where
+    S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+    E: std::fmt::Display + Send + Sync + 'static,
+{
+    type Item = Result<Bytes, E>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        if *this.done {
+            return Poll::Ready(None);
+        }
+
+        match this.inner.poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                this.timer.reset(tokio::time::Instant::now() + *this.interval);
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => {
+                *this.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => {
+                match this.timer.as_mut().poll(cx) {
+                    Poll::Ready(_) => {
+                        this.timer.reset(tokio::time::Instant::now() + *this.interval);
+                        Poll::Ready(Some(Ok(Bytes::from_static(b": keepalive\n\n"))))
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
     }
 }

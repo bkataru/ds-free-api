@@ -69,8 +69,7 @@ pub(crate) fn make_chunk(model: &str, delta: Delta, finish: Option<&'static str>
 }
 
 pin_project! {
-    #[allow(unused_doc_comments)]
-    /// Adapter stream that folds `DsFrame` emissions into chunked OpenAI deltas
+    // Adapter stream that folds `DsFrame` emissions into chunked OpenAI deltas.
     pub struct ConverterStream<S> {
         #[pin]
         inner: S,

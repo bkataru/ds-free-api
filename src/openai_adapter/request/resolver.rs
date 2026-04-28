@@ -16,7 +16,7 @@ pub struct ModelResolution {
 
 /// Resolve `model_id` plus optional extensions into capability flags.
 ///
-/// `thinking_enabled` is on when `reasoning_effort` is one of `minimal`/`low`/`medium`/`high`/`xhigh`.
+/// `thinking_enabled` is on when `reasoning_effort` is not `"none"`.
 /// When `reasoning_effort` is omitted it defaults to `"high"` (reasoning on by default).
 /// `search_enabled` turns on when `web_search_options` is present (off otherwise).
 pub fn resolve(
@@ -32,10 +32,7 @@ pub fn resolve(
         .ok_or_else(|| format!("unsupported model: {}", model_id))?;
 
     let reasoning_effort = reasoning_effort.unwrap_or("high");
-    let thinking_enabled = matches!(
-        reasoning_effort,
-        "minimal" | "low" | "medium" | "high" | "xhigh"
-    );
+    let thinking_enabled = reasoning_effort != "none";
 
     let search_enabled = web_search_options.is_some();
 

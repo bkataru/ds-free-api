@@ -300,8 +300,8 @@ mod tests {
             ("medium", true),
             ("high", true),
             ("xhigh", true),
-            ("unknown", false),
-            ("", false),
+            ("unknown", true),
+            ("", true),
         ] {
             let body = serde_json::json!({
                 "model": "deepseek-default",

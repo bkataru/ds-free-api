@@ -7,7 +7,7 @@ mod handlers;
 mod stream;
 
 use axum::{
-    Router,
+    Json, Router,
     extract::Request,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -15,6 +15,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use serde::Serialize;
 
 use crate::anthropic_compat::AnthropicCompat;
 use crate::config::Config;
@@ -60,33 +61,56 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 }
 
 /// Build the router
+/// Build the router with public and protected routes
 fn build_router(state: AppState, api_tokens: &[crate::config::ApiToken]) -> Router {
     let has_auth = !api_tokens.is_empty();
     let tokens: Vec<String> = api_tokens.iter().map(|t| t.token.clone()).collect();
 
-    let mut router = Router::new()
-        .route("/", get(|| async { "ai-free-api" }))
-        // OpenAI
+    let public = Router::new()
+        .route("/", get(root))
+        .with_state(state.clone());
+
+    let protected = Router::new()
         .route("/v1/chat/completions", post(handlers::chat_completions))
         .route("/v1/models", get(handlers::list_models))
         .route("/v1/models/{id}", get(handlers::get_model))
-        // Anthropic
         .route("/anthropic/v1/messages", post(handlers::anthropic_messages))
         .route("/anthropic/v1/models", get(handlers::anthropic_list_models))
-        .route(
-            "/anthropic/v1/models/{id}",
-            get(handlers::anthropic_get_model),
-        )
+        .route("/anthropic/v1/models/{id}", get(handlers::anthropic_get_model))
         .with_state(state);
 
-    if has_auth {
-        router = router.layer(middleware::from_fn(move |req, next| {
-            let tokens = tokens.clone();
-            async move { auth_middleware(req, next, tokens).await }
-        }));
-    }
-
+    let router = if has_auth {
+        let tokens_clone = tokens.clone();
+        public.merge(
+            protected.layer(middleware::from_fn(move |req, next| {
+                let tokens = tokens_clone.clone();
+                async move { auth_middleware(req, next, tokens).await }
+            }))
+        )
+    } else {
+        public.merge(protected)
+    };
     router
+}
+
+/// Root endpoint that lists available API paths
+async fn root() -> Json<RootResponse> {
+    Json(RootResponse {
+        endpoints: vec![
+            "/v1/chat/completions",
+            "/v1/models",
+            "/anthropic/v1/messages",
+            "/anthropic/v1/models",
+        ],
+        project: "https://github.com/bkataru/ds-free-api".into(),
+    })
+}
+
+/// Response for the root endpoint
+#[derive(Serialize)]
+struct RootResponse {
+    endpoints: Vec<&'static str>,
+    project: String,
 }
 
 /// API token authentication middleware

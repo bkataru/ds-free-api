@@ -19,8 +19,7 @@ pub struct SseEvent {
 }
 
 pin_project! {
-    #[allow(unused_doc_comments)]
-    /// Incremental adaptor that emits fully framed `SseEvent` values while honoring UTF-8 boundaries.
+    // Incremental adaptor that emits fully framed `SseEvent` values while honoring UTF-8 boundaries.
     pub struct SseStream<S> {
         #[pin]
         inner: S,

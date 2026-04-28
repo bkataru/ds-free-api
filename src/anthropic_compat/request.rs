@@ -342,7 +342,7 @@ pub fn to_openai_request(body: &[u8]) -> Result<Vec<u8>, AnthropicCompatError> {
     if let Some(thinking) = req.thinking {
         let effort = match thinking {
             ThinkingConfig::Enabled { .. } | ThinkingConfig::Adaptive { .. } => "high",
-            ThinkingConfig::Disabled => "minimal",
+            ThinkingConfig::Disabled => "none",
         };
         openai.insert("reasoning_effort".to_string(), json!(effort));
     }
@@ -810,7 +810,7 @@ mod tests {
         }"#;
 
         let openai = parse_openai(&to_openai_request(body).unwrap());
-        assert_eq!(openai["reasoning_effort"], "minimal");
+        assert_eq!(openai["reasoning_effort"], "none");
     }
 
     #[test]
